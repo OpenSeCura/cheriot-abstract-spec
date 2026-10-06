@@ -1,4 +1,4 @@
-# Contributing to Cherified
+# Contributing
 
 Want to contribute? Great! First, a few objectives:
 

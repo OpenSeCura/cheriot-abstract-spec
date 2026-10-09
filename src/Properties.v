@@ -52,9 +52,9 @@ Module Configuration.
 
     (** One entry of a compartment's export table: a function the compartment exposes to
         cross-compartment calls, as the switcher reads it.  The offset locates the entry point
-        within the compartment's code capability; the stack size and argument count are what
-        the switcher checks and sets up on a call; the interrupt status is the one the callee
-        runs with. *)
+        relative to the compartment's code capability; the argument count and the interrupt
+        status are used by the compartment-call contract in [SwitcherProperty]; the stack size
+        is recorded but not yet used by this specification. *)
     Record ExportEntry : Type := {
         exportEntryOffset: nat; 
         exportEntryStackSize: nat;
@@ -181,8 +181,8 @@ Module Configuration.
       | ImportEntry_SentryToLibraryFunction c => c
       end.                                                    
     (** The capabilities a compartment holds before it runs: its PCC, its CGP if any, its
-        imports and its sealing capabilities.  Everything a compartment can ever reach must
-        derive from these ([WFCompartment_InitialCaps]). *)
+        imports and its sealing capabilities.  In the initial memory, everything the compartment
+        can reach derives from these without loading ([WFCompartment_InitialCaps]). *)
     (* The set of capabilities a compartment initially has access to. *)
     Definition capsOfCompartment (c: Compartment) :=
       [c.(compartmentPCC)]
@@ -293,8 +293,8 @@ Module Configuration.
         its initial capabilities without loading; its PCC and CGP are unsealed with the
         permitted permissions; every sentry or sealed reference it can reach was declared in
         its import table, and every import entry is well formed; its sealing capabilities are
-        proper and none of them can seal with the switcher's key.  All of it is judged in the
-        initial memory. *)
+        proper and none of them can seal with the switcher's key.  The reachability clauses are
+        judged in the initial memory; the others constrain the capabilities themselves. *)
     Record WFCompartment (config: Config) (c: Compartment) :=
       {
         (* All RWX addresses reachable by a compartment belong to the compartment's footprint. *)
@@ -340,8 +340,8 @@ Module Configuration.
 
     (** A well-formed configuration: the regions above are pairwise disjoint, every
         compartment is well formed, the switcher's index names a compartment, and only the
-        switcher's compartment holds a capability that can unseal with the switcher's key.
-        This is the first hypothesis of [ThreadIsolatedMonotonicity]. *)
+        switcher's compartment lists, among its sealing capabilities, one that can unseal with
+        the switcher's key.  This is the first hypothesis of [ThreadIsolatedMonotonicity]. *)
     Record WFConfig (config: Config) := {
         (* Compartments, stack, and export table occupy disjoint memory regions. *)
         WFConfig_footprintDisjoint: Separated (ConfigFootprints config);
@@ -399,13 +399,15 @@ Module Configuration.
     Abbreviation ThreadState := (UserContext * SystemContext)%type.
 
     (** The PCC carries the system permission: the thread is in the switcher or on an
-        exception path.  [ThreadInSystemMode] is the same test on a [Thread]. *)
+        exception path. *)
     Definition InSystemMode (st: ThreadState) : Prop :=
       In Perm.System (Spec.pcc st).(capPerms).
+    (** The same test on a [Thread]. *)
     Definition ThreadInSystemMode (t: Thread) :=
       In Perm.System t.(thread_userState).(thread_pcc).(capPerms).
 
-    (** The switcher's code region reads as in the initial memory. *)
+    (** The switcher compartment's footprint (its code and, if it has one, its globals) reads
+        as in the initial memory. *)
     Definition SwitcherCodeUnchanged (config: Config) (mem: FullMemory) : Prop :=
       forall addr, AddrInCompartment config
                      config.(configSwitcher).(Switcher_compartmentIdx) addr ->
@@ -450,15 +452,15 @@ Module Configuration.
     }.
 
     (** The export-table lookup the switcher relies on, taken as a parameter: from a
-        capability, the compartment index and entry index it denotes, if any.
-        [WFLookupExportTableCompartmentId] is the condition it is meant to satisfy: the
-        capability's addresses lie in that compartment's export table and the entry exists. *)
+        capability, the compartment index and entry index it denotes, if any. *)
     (* Based on the initial configuration, we can statically determine
        whether a capability corresponds to a compartment's export table
        entry and if so, which compartment and which entry.
        TOOD: add a well-formedness condition as below.
      *)
     Context (LookupExportTableCompartmentId: Config -> Cap -> option (nat * nat)).
+    (** The condition the lookup is meant to satisfy: the capability's addresses lie in that
+        compartment's export table and the entry exists. *)
     Definition WFLookupExportTableCompartmentId :=
       forall config cap cid eid,
         LookupExportTableCompartmentId config cap = Some (cid,eid) ->
@@ -507,7 +509,8 @@ Module Configuration.
          capCursor := cursor 
       |}. 
 
-    (** A stack capability over [len] bytes from [base], with the given cursor. *)
+    (** A stack capability over [len] bytes from the given base address, with the given
+        cursor. *)
     Definition mkCSP (base: Addr) (len: nat) (cursor: Addr) : Cap :=
       mkCSP' (seq base len) cursor.
 
@@ -672,9 +675,10 @@ Module Configuration.
     (** Consequences of well-formedness, and the preservation of [GlobalInvariant]. *)
     Section Proofs.
 
-      (** The address, or every address of the list, lies in the switcher's compartment. *)
+      (** The address lies in the switcher's compartment. *)
       Definition AddrInSwitcherFootprint (config: Config) (addr: Addr) :=
         AddrInCompartment config (switcherIdx config) addr.
+      (** Every address of the list lies in the switcher's compartment. *)
       Definition AddrsInSwitcherFootprint (config: Config) (addr: list Addr) :=
         forall a, In a addr -> AddrInCompartment config (switcherIdx config) a.
 
@@ -2496,19 +2500,22 @@ End CompartmentIsolationValidation.
 
     The main result of this development.  For a well-formed configuration and an initial
     machine whose threads can read or write only pairwise-disjoint sets of addresses, every
-    same-domain execution keeps the threads isolated and keeps each thread's reachable
-    capabilities within the set reachable from its initial state.
+    same-domain execution keeps each thread's reachable capabilities within the set reachable
+    from its initial state.  Thread isolation is the hypothesis on the initial machine; the
+    proof maintains it along the way, as part of its invariant, but the theorem does not
+    state it as a conclusion.
 
     "Same-domain" is the restriction that lets the theorem hold without any assumption about
-    the switcher: the trace may contain thread switches and general (non-switcher)
-    instructions, but no compartment call, compartment return or exception.  After the first
-    such event the property below holds vacuously ([PThreadIsolatedMonotonicity] is an
-    implication from [SameDomainTrace]), so nothing is claimed about those events or about
-    what follows them; the switcher's contracts are specified in [SwitcherProperty] and are
-    not proved here.
+    the switcher's contracts: the trace may contain thread switches and general instructions
+    (any instruction other than a compartment call, a compartment return or an exception,
+    whether or not the thread holds the system permission), and none of those three events.
+    After the first such event the property below holds vacuously
+    ([PThreadIsolatedMonotonicity] is an implication from [SameDomainTrace]), so nothing is
+    claimed about those events or about what follows them; the switcher's contracts are
+    specified in [SwitcherProperty] and are not proved here.
 
     The proof is an inductive invariant over [MachineStep], assembled with
-    [Combinators.always] ([Utils]): [InvariantInitial] establishes it, [InvariantStep]
+    [Combinators.always] (in Utils.v): [InvariantInitial] establishes it, [InvariantStep]
     preserves it and [InvariantUse] draws the property from it.  Per-instruction
     monotonicity is not proved here either: it is a hypothesis carried by every general
     instruction ([WfGeneralInst] in [Spec]), and the theorem lifts it to whole executions. *)
@@ -2569,7 +2576,8 @@ Module ThreadIsolatedMonotonicity.
 
     (** The hypothesis on the initial machine: it is a valid initial state of the configuration
         ([ValidInitialState], from [Configuration]) and its threads are isolated from the
-        start.  The theorem preserves isolation; it does not establish it. *)
+        start.  Isolation is assumed here and maintained by the proof's invariant along
+        same-domain traces, but it is not part of the theorem's conclusion. *)
     Definition ValidInitialMachine (config: Config) (st: Machine) : Prop :=
       ValidInitialState config st /\
       IsolatedThreads st.
@@ -2824,7 +2832,7 @@ Module ThreadIsolatedMonotonicity.
         reach only capabilities that were reachable from its initial state
         ([PThreadIsolatedMonotonicity]).
 
-        [Combinators.always step P init] ([Utils]) holds when some invariant is true initially,
+        [Combinators.always step P init] (in Utils.v) holds when some invariant is true initially,
         is preserved by every step and implies [P]; the "every reachable state" reading follows
         by induction on steps.  The witness is [Invariant] with the three lemmas above.
 

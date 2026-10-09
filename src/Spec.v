@@ -506,7 +506,7 @@ Section Machine.
         forall rf pcc m1 m2,
           ReachableMemSame m1 m2 (pcc :: capsOfRf rf) ->
           match normalInst (Build_UserThreadState rf pcc, m1),
-                normalInst (Build_UserThreadState rf pcc, m1) with
+                normalInst (Build_UserThreadState rf pcc, m2) with
           | Ok (uts1, m1'), Ok (uts2, m2') =>
               uts1 = uts2 /\ UpdatedMemSame m1 m2 m1' m2'
           | Exn e1, Exn e2 => e1 = e2

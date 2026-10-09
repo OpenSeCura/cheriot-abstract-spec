@@ -2318,10 +2318,33 @@ End CompartmentIsolationValidation.
 (* From any valid initial state where threads are isolated (their reachable
    read/write caps are disjoint), for any sequence of same-domain (Ev_General)
    steps, the reachable caps in each thread do not increase. *)
+(** * Thread-isolated monotonicity
+
+    The main result of this development.  For a well-formed configuration and an initial
+    machine whose threads can read or write only pairwise-disjoint sets of addresses, every
+    same-domain execution keeps the threads isolated and keeps each thread's reachable
+    capabilities within the set reachable from its initial state.
+
+    "Same-domain" is the restriction that lets the theorem hold without any assumption about
+    the switcher: the trace may contain thread switches and general (non-switcher)
+    instructions, but no compartment call, compartment return or exception.  After the first
+    such event the property below holds vacuously ([PThreadIsolatedMonotonicity] is an
+    implication from [SameDomainTrace]), so nothing is claimed about those events or about
+    what follows them; the switcher's contracts are specified in [SwitcherProperty] and are
+    not proved here.
+
+    The proof is an inductive invariant over [MachineStep], assembled with
+    [Combinators.always] ([Utils]): [InvariantInitial] establishes it, [InvariantStep]
+    preserves it and [InvariantUse] draws the property from it.  Per-instruction
+    monotonicity is not proved here either: it is a hypothesis carried by every general
+    instruction ([WfGeneralInst] in [Spec]), and the theorem lifts it to whole executions. *)
 Module ThreadIsolatedMonotonicity.
   Import ListNotations.
   Import Configuration.
   Import Separation.
+  (** The instruction-set and machine parameters the module is generic over.  Nothing below
+      depends on a particular capability encoding, fetch function or decoder: the theorem
+      holds for every instantiation of these parameters. *)
   Section WithContext. 
     Context [ISA: ISA_params].
     Context {machineTypeParams: MachineTypeParams}.
@@ -2329,6 +2352,7 @@ Module ThreadIsolatedMonotonicity.
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
     Context {pccNotInBounds : EXNInfo}.
+    (** Local abbreviations: the step relations instantiated with this section's parameters. *)
     Abbreviation AddrOffset := nat (only parsing).
     Abbreviation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
     Abbreviation PCC := Cap (only parsing).
@@ -2338,53 +2362,94 @@ Module ThreadIsolatedMonotonicity.
     Abbreviation ValidInitialState := (@ValidInitialState _ _ _ LookupExportTableCompartmentId).
     Abbreviation ValidInitialThread := (@ValidInitialThread _ _ _ LookupExportTableCompartmentId). 
 
+    (** The events a same-domain trace may contain: a thread switch, or a step on which the
+        current thread completed a general instruction without raising an exception (every
+        other branch of [threadStepFunction] produces a different event).  Compartment calls
+        ([Ev_Call]), returns ([Ev_Ret]) and exceptions ([Ev_Exception]) are the switcher's
+        events and are excluded: they are exactly what the theorem does not cover. *)
     Definition SameDomainEvent (ev: Event) : Prop :=
       match ev with
       | Ev_SwitchThreads _ => True
       | Ev_SameThread _ Ev_General => True
       | _ => False
       end.
+    (** A trace is same-domain when every event in it is. *)
     Definition SameDomainTrace (tr: Trace) : Prop :=
       Forall SameDomainEvent tr.
 
+    (** Thread [t_cur], running in memory [m_cur], can reach no capability that [t_init] could
+        not already reach in memory [m_init]: [ReachableCapSubset] ([SpecLemmas]) over the
+        capabilities a thread holds ([capsOfThread]: PCC, register file, MEPCC, MTCC and the
+        trusted-stack frames).  This is the per-thread form of monotonicity. *)
     Definition ThreadReachableCapSubset (m_init m_cur: FullMemory) (t_init t_cur: Thread) : Prop :=
       ReachableCapSubset m_init m_cur (capsOfThread t_init) (capsOfThread t_cur).
 
+    (** Pairwise, no address is reachable with read or write permission from the capabilities
+        of two different threads ([RWAddressesDisjoint], in the machine's current memory).
+        This is the isolation half of the invariant: it is what keeps one thread's stores from
+        changing what another thread can reach. *)
     (* Threads only have read/write access to disjoint addresses. *)
     Definition IsolatedThreads (machine: Machine) : Prop :=
       Pairwise (RWAddressesDisjoint machine.(machine_memory))
                (map capsOfThread machine.(machine_threads)).
 
+    (** The hypothesis on the initial machine: it is a valid initial state of the configuration
+        ([ValidInitialState], from [Configuration]) and its threads are isolated from the
+        start.  The theorem preserves isolation; it does not establish it. *)
     Definition ValidInitialMachine (config: Config) (st: Machine) : Prop :=
       ValidInitialState config st /\
       IsolatedThreads st.
 
+    (** Fix a configuration and an initial machine satisfying the hypothesis; everything in
+        this section is relative to that initial machine. *)
     Section WithConfig.
       Variable config: Config.
       Variable initialMachine: Machine.
       Variable pfValidInitialMachine: ValidInitialMachine config initialMachine.
 
+      (** Thread by thread ([Forall2] pairs the initial thread list with the current one), the
+          current thread reaches no capability its initial state could not reach:
+          [ThreadReachableCapSubset] between the initial memory and the current memory.  This
+          is the monotonicity half of the invariant. *)
       Definition IsolatedMonotonicity (machine: Machine) :=
         Forall2 (ThreadReachableCapSubset initialMachine.(machine_memory) machine.(machine_memory))
                 initialMachine.(machine_threads) machine.(machine_threads).
 
+      (** The property the theorem establishes of every reachable state [(machine, tr)]: if
+          the trace so far is same-domain, then [IsolatedMonotonicity] holds of the machine.
+          The implication is where the scope of the result lives: on a trace containing a
+          call, a return or an exception the premise fails and the property says nothing. *)
       (* A thread's caps are a subset of caps reachable from initial state. *)
       Definition PThreadIsolatedMonotonicity (st: State) : Prop :=
         let '(machine, tr) := st in
         SameDomainTrace tr ->
         IsolatedMonotonicity machine.
 
+      (** The two conjuncts maintained along same-domain traces: isolation and monotonicity.
+          Isolation is needed to prove monotonicity (a step of the current thread must not
+          enlarge what an idle thread can reach), which is why the invariant is stronger than
+          the property. *)
       Record Invariant' machine : Prop :=
         {
           Inv_Isolation: IsolatedThreads machine;
           Inv_Monotonicity: IsolatedMonotonicity machine
         }.
+      (** The inductive invariant.  [GlobalInvariant] (the current thread index is in range
+          and every thread has a well-formed register file) holds in every reachable state,
+          and [Invariant'] holds whenever the trace so far is same-domain.  A trace only
+          grows, so once it has left the same-domain fragment the second conjunct is vacuous
+          for the rest of the execution. *)
       Definition Invariant (st: State) :=
         GlobalInvariant config (fst st) /\
         (SameDomainTrace (snd st) -> Invariant' (fst st)).
+      (** The two projections of [Invariant'], for [eauto with invariants]. *)
       Hint Resolve Inv_Monotonicity : invariants.
       Hint Resolve Inv_Isolation: invariants.
 
+      (** Establish: the invariant holds of the initial machine with the empty trace.
+          [GlobalInvariant] follows from validity of the initial state
+          ([Configuration.InvariantInitial]); isolation is the hypothesis itself; and
+          monotonicity is reflexive, each thread against its own initial state. *)
       Lemma InvariantInitial  :
         Invariant (initialMachine, []).
       Proof.
@@ -2397,6 +2462,8 @@ Module ThreadIsolatedMonotonicity.
           + cbv [SameDomainTrace ThreadReachableCapSubset ReachableCapSubset ValidInitialMachine IsolatedMonotonicity].
             apply Forall2_refl. auto.
       Qed.
+      (** The number of threads never changes: [GlobalInvariant] pairs the machine's threads
+          with the configuration's thread metadata, in the initial and in the current state. *)
       Lemma GlobalInvariant_length:
         forall m,
           GlobalInvariant config m ->
@@ -2409,6 +2476,8 @@ Module ThreadIsolatedMonotonicity.
         apply Forall2_length in Inv_threads1. auto.
       Qed.
 
+      (** Discharges a [ValidRf] side condition on the current thread's register file from
+          [GlobalInvariant]. *)
       Ltac simplify_invariants :=
         repeat match goal with
           | H: GlobalInvariant _ ?m,
@@ -2417,6 +2486,7 @@ Module ThreadIsolatedMonotonicity.
               eapply GlobalInvariantImpliesValidRf with (1 := H) (2 := H1)
           end.
 
+      (** Reads the monotonicity conjunct of [Invariant'] for the thread at index [id]. *)
       Lemma InvariantImpliesThreadReachableCapSubset:
         forall m thread thread' id,
           Invariant' m ->
@@ -2426,6 +2496,8 @@ Module ThreadIsolatedMonotonicity.
       Proof.
         intros. eapply Forall2_nth_error2 with (1 := Inv_Monotonicity _ H); eauto.
       Qed.
+      (** From pairwise read/write disjointness, the one-directional form the separation lemmas
+          take: no address thread [i] can write is an address thread [j] can read. *)
       Lemma IsolatedImpliesWriteReadDisjoint:
         forall m i j x y,
         IsolatedThreads m ->
@@ -2440,6 +2512,21 @@ Module ThreadIsolatedMonotonicity.
         eapply hisolated; eauto; by (apply map_nth_error).
       Qed.
 
+      (** The step case for a general instruction executed by the current thread, the only
+          same-domain event that changes memory or a thread (a thread switch is handled
+          directly in [InvariantStep]): [Invariant'] is preserved.
+
+          The proof forces the step to the successful branch of a general instruction and
+          applies [generalInstOkCommon] ([SpecLemmas]), which extracts from the instruction's
+          well-formedness ([WfGeneralInst]) the two facts everything else rests on: the memory
+          update is authorized by capabilities the thread reaches ([ValidMemUpdate]), and the
+          thread's new capabilities were reachable from its old ones ([ReachableCaps]).
+          Isolation is then preserved by the separation lemmas, [RWAddressDisjointUpdate] for
+          the pairs involving the stepping thread and [RWAddressDisjointUpdateUnchanged] for
+          pairs of idle threads.  Monotonicity is preserved by [ReachableCapSubset_ValidUpdate]
+          for the stepping thread, and by [ReachableCapSubsetUpdateDisjointUnchanged] for every
+          idle thread, whose reach cannot grow because the stepping thread cannot write any
+          address the idle thread reads ([IsolatedImpliesWriteReadDisjoint]). *)
       Lemma SameDomainStepOk:
         forall m m' ev,
           GlobalInvariant config m ->
@@ -2517,6 +2604,11 @@ Module ThreadIsolatedMonotonicity.
         }
       Qed.
 
+      (** Preserve: every [MachineStep] keeps the invariant.  [GlobalInvariant] is preserved by
+          [GlobalInvariantStep] for any step.  For the second conjunct, if the new trace is
+          same-domain then so was the old one and the new event is one of the two admitted
+          kinds: a thread switch changes only the current thread index, so [Invariant']
+          carries over unchanged; a general instruction is [SameDomainStepOk]. *)
       Lemma InvariantStep (s: State) :
         forall t,
         Invariant s ->
@@ -2538,6 +2630,8 @@ Module ThreadIsolatedMonotonicity.
         - eapply SameDomainStepOk with (m := m); eauto.
       Qed.
 
+      (** Use: the invariant implies the property.  On a same-domain trace the monotonicity
+          conjunct of [Invariant'] is [IsolatedMonotonicity]. *)
       Lemma InvariantUse (s: State) :
         Invariant s ->
         PThreadIsolatedMonotonicity s.
@@ -2548,6 +2642,23 @@ Module ThreadIsolatedMonotonicity.
       Qed.
     End WithConfig.
 
+    (** ** The theorem
+
+        For every well-formed configuration [config] and every [initial_machine] that is a
+        valid initial state of [config] with isolated threads: in every state reachable from
+        [(initial_machine, [])] by [MachineStep] whose trace is same-domain, each thread can
+        reach only capabilities that were reachable from its initial state
+        ([PThreadIsolatedMonotonicity]).
+
+        [Combinators.always step P init] ([Utils]) holds when some invariant is true initially,
+        is preserved by every step and implies [P]; the "every reachable state" reading follows
+        by induction on steps.  The witness is [Invariant] with the three lemmas above.
+
+        Not covered: compartment calls, compartment returns and exceptions, and every state
+        after the first of them; the switcher ([SwitcherProperty]); any concrete instruction
+        set, since per-instruction monotonicity is the hypothesis [WfGeneralInst] on each
+        instruction and not a result; and the satisfiability of [WFConfig] and
+        [ValidInitialMachine] by a real configuration, which this development does not show. *)
     (* For any well-formed configuration `config` and initial_machine
        configured with `config` such that the reachable addresses with
        read/write permissions in each thread are isolated, after any

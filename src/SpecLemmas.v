@@ -758,9 +758,9 @@ Section WithContext.
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
     Context {pccNotInBounds : EXNInfo}.
-    Notation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
-    Notation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
-    Notation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
+    Abbreviation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
+    Abbreviation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
+    Abbreviation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
 
     Lemma SameThreadStep_lengthThreads:
       forall m1 m2 ev,

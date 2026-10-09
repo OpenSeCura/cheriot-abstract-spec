@@ -60,11 +60,11 @@ Module Configuration.
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
     Context {pccNotInBounds : EXNInfo}.
-    Notation AddrOffset := nat (only parsing).
-    Notation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
-    Notation PCC := Cap (only parsing).
-    Notation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
-    Notation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
+    Abbreviation AddrOffset := nat (only parsing).
+    Abbreviation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
+    Abbreviation PCC := Cap (only parsing).
+    Abbreviation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
+    Abbreviation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
 
     Record InitialThreadMetadata := {
         (* initThreadEntryPoint: Addr; *)
@@ -294,7 +294,7 @@ Module Configuration.
     Definition MemEquivalentAtThread (config: Config) (tid: nat) (mem1 mem2: FullMemory) : Prop :=
       forall addr, AddrInStack config tid addr ->
                    MemEquivalentAtAddr mem1 mem2 addr.
-    Notation ThreadState := (UserContext * SystemContext)%type.
+    Abbreviation ThreadState := (UserContext * SystemContext)%type.
 
     Definition InSystemMode (st: ThreadState) : Prop :=
       In Perm.System (Spec.pcc st).(capPerms).
@@ -715,20 +715,20 @@ Module SwitcherProperty.
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {fetchAddrsOk: FetchAddrsOk fetchAddrs}.
     Context {pccNotInBounds : EXNInfo}.
-    Notation AddrOffset := nat (only parsing).
-    Notation PCC := Cap (only parsing).
-    Notation State := (Machine * Trace)%type.
+    Abbreviation AddrOffset := nat (only parsing).
+    Abbreviation PCC := Cap (only parsing).
+    Abbreviation State := (Machine * Trace)%type.
     Context {LookupExportTableCompartmentId: Config -> Cap -> option (nat * nat)}.
-    Notation LookupExportTableCompartment := (LookupExportTableCompartment LookupExportTableCompartmentId).
-    Notation LookupExportTableCompartmentAndEntry := (LookupExportTableCompartmentAndEntry LookupExportTableCompartmentId).
+    Abbreviation LookupExportTableCompartment := (LookupExportTableCompartment LookupExportTableCompartmentId).
+    Abbreviation LookupExportTableCompartmentAndEntry := (LookupExportTableCompartmentAndEntry LookupExportTableCompartmentId).
 
-    Notation ValidInitialState := (@ValidInitialState _ _ _ LookupExportTableCompartmentId).
-    Notation ValidInitialThread := (@ValidInitialThread _ _ _ LookupExportTableCompartmentId).
+    Abbreviation ValidInitialState := (@ValidInitialState _ _ _ LookupExportTableCompartmentId).
+    Abbreviation ValidInitialThread := (@ValidInitialThread _ _ _ LookupExportTableCompartmentId).
     Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
-    Notation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
-    Notation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
-    Notation ThreadState := (UserContext * SystemContext)%type.
-    Notation ValidTrustedStack := (ValidTrustedStack LookupExportTableCompartmentId).
+    Abbreviation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
+    Abbreviation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
+    Abbreviation ThreadState := (UserContext * SystemContext)%type.
+    Abbreviation ValidTrustedStack := (ValidTrustedStack LookupExportTableCompartmentId).
     Section Utils.
       (* Notation to specfy properties of register files. *)
       Definition RfSpecT : Type := list (nat * (CapOrBytes -> Prop)).
@@ -783,7 +783,7 @@ Module SwitcherProperty.
     Section WithConfig.
       Variable config: Config.
       Variable (pf_wf_config: WFConfig config).
-      Notation MTCC := (MTCC config).
+      Abbreviation MTCC := (MTCC config).
 
       Definition CompartmentCallPCC : Cap :=
         mkUnsealedPCC (switcherFootprint config)
@@ -797,8 +797,8 @@ Module SwitcherProperty.
 
       (* TODO: move these under Configuration and prove they are inductively preserved. *)
       Record UserModeInvariants (meta: InitialThreadMetadata) (t: Thread) : Prop :=
-      { UserInv_MTCC := t.(thread_systemState).(thread_mepcc) = MTCC
-      ; UserInv_TrustedStack := ValidTrustedStack config t.(thread_systemState).(thread_trustedStack)
+      { UserInv_MTCC : t.(thread_systemState).(thread_mepcc) = MTCC
+      ; UserInv_TrustedStack : ValidTrustedStack config t.(thread_systemState).(thread_trustedStack)
       }.    
       
       Record ThreadInv' (meta: InitialThreadMetadata) (t: Thread) : Prop :=
@@ -1628,12 +1628,12 @@ Module CompartmentIsolationValidation.
     Context {capEncodeDecode: CapEncodeDecode}.
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {pccNotInBounds : EXNInfo}.
-    Notation AddrOffset := nat (only parsing).
-    Notation PCC := Cap (only parsing).
-    Notation State := (Machine * Trace)%type.
+    Abbreviation AddrOffset := nat (only parsing).
+    Abbreviation PCC := Cap (only parsing).
+    Abbreviation State := (Machine * Trace)%type.
     Context {LookupExportTableCompartmentId: Config -> Cap -> option (nat * nat)}.
-    Notation ValidInitialState := (@ValidInitialState _ _ _ LookupExportTableCompartmentId).
-    Notation ValidInitialThread := (@ValidInitialThread _ _ _ LookupExportTableCompartmentId).
+    Abbreviation ValidInitialState := (@ValidInitialState _ _ _ LookupExportTableCompartmentId).
+    Abbreviation ValidInitialThread := (@ValidInitialThread _ _ _ LookupExportTableCompartmentId).
 
     (* Compartments are connected on the audit graph.
        - Compartments can share libraries without being connected.
@@ -1999,8 +1999,8 @@ Module CompartmentIsolationValidation.
       Qed.
 
       Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
-      Notation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
-      Notation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
+      Abbreviation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
+      Abbreviation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
 
       (* TODO: duplicated *)
       Ltac saturate_footprints := 
@@ -2329,14 +2329,14 @@ Module ThreadIsolatedMonotonicity.
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
     Context {pccNotInBounds : EXNInfo}.
-    Notation AddrOffset := nat (only parsing).
-    Notation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
-    Notation PCC := Cap (only parsing).
-    Notation State := (Machine * Trace)%type.
-    Notation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
+    Abbreviation AddrOffset := nat (only parsing).
+    Abbreviation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
+    Abbreviation PCC := Cap (only parsing).
+    Abbreviation State := (Machine * Trace)%type.
+    Abbreviation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
     Context {LookupExportTableCompartmentId: Config -> Cap -> option (nat*nat)}.
-    Notation ValidInitialState := (@ValidInitialState _ _ _ LookupExportTableCompartmentId).
-    Notation ValidInitialThread := (@ValidInitialThread _ _ _ LookupExportTableCompartmentId). 
+    Abbreviation ValidInitialState := (@ValidInitialState _ _ _ LookupExportTableCompartmentId).
+    Abbreviation ValidInitialThread := (@ValidInitialThread _ _ _ LookupExportTableCompartmentId). 
 
     Definition SameDomainEvent (ev: Event) : Prop :=
       match ev with
@@ -2478,18 +2478,18 @@ Module ThreadIsolatedMonotonicity.
             rewrite idleThreadsEq in * by lia;
             rewrite threadIdEq in *; option_simpl.
           - eapply RWAddressDisjointUpdate with (mem := machine_memory m); eauto.
-            eapply Inv_Isolation with (i := machine_curThreadId m) (j := j); try lia; auto;
+            eapply (Inv_Isolation _ hinv) with (i := machine_curThreadId m) (j := j); try lia; auto;
               erewrite map_nth_error; eauto; auto.
           - apply RWAddressDisjointUpdate_symmetry.
             eapply RWAddressDisjointUpdate with (mem := machine_memory m); eauto.
-            eapply Inv_Isolation with (i := machine_curThreadId m) (j := i); try lia; auto;
+            eapply (Inv_Isolation _ hinv) with (i := machine_curThreadId m) (j := i); try lia; auto;
               erewrite map_nth_error; eauto; auto.
           - eapply RWAddressDisjointUpdateUnchanged; eauto.
-            eapply Inv_Isolation with (i := i) (j := j); try lia; auto;
+            eapply (Inv_Isolation _ hinv) with (i := i) (j := j); try lia; auto;
               erewrite map_nth_error; eauto; auto.
-            eapply Inv_Isolation with (i := i) (j := machine_curThreadId m); try lia; auto;
+            eapply (Inv_Isolation _ hinv) with (i := i) (j := machine_curThreadId m); try lia; auto;
               erewrite map_nth_error; try reflexivity; auto.
-            eapply Inv_Isolation with (i := j) (j := machine_curThreadId m); try lia; auto;
+            eapply (Inv_Isolation _ hinv) with (i := j) (j := machine_curThreadId m); try lia; auto;
               erewrite map_nth_error; try reflexivity; auto.
         }
         (* IsolatedMonotonicity preserved. *)

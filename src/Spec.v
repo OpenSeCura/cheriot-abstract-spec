@@ -227,8 +227,8 @@ Section Machine.
       | _ => false
       end.
 
-    Notation PermIntersect perms1 perms2 := (filter (fun p => existsb (Perm.t_beq p) perms2) perms1).
-    Notation LabelIntersect labels1 labels2 := (filter (fun p => existsb (Label_beq p) labels2) labels1).
+    Abbreviation PermIntersect perms1 perms2 := (filter (fun p => existsb (Perm.t_beq p) perms2) perms1).
+    Abbreviation LabelIntersect labels1 labels2 := (filter (fun p => existsb (Label_beq p) labels2) labels1).
 
     Definition AttenuatePermsIfNotSealed (sealed: bool) (perms1 perms2: list Perm.t) :=
       if sealed then perms2
@@ -387,12 +387,12 @@ Section Machine.
 
   Section Machine.
     Import ListNotations.
-    Notation PCC := Cap (only parsing).
-    Notation MEPCC := Cap (only parsing). (* While MEPCC can become invalid architecturally,
+    Abbreviation PCC := Cap (only parsing).
+    Abbreviation MEPCC := Cap (only parsing). (* While MEPCC can become invalid architecturally,
                                              it shouldn't if the switcher is correct *)
-    Notation MTCC := Cap (only parsing).
+    Abbreviation MTCC := Cap (only parsing).
     Definition EXNInfo := Bytes.
-    Notation RegIdx := nat (only parsing).
+    Abbreviation RegIdx := nat (only parsing).
 
     Definition RegisterFile := list CapOrBytes.
     Definition capsOfRf (rf: RegisterFile) := listSumToInl rf.
@@ -627,7 +627,7 @@ Section Machine.
                  /\ (exists linkCap,
                         nth_error rf' link = Some (inl linkCap)
                         /\ RestrictUnsealed pcc (setCapSealed linkCap None) (* TODO: Check correctness *)
-                        /\ linkCap.(capSealed) = Some (inl (if ints
+                        /\ linkCap.(capSealed) = Some (inl (if ints is InterruptsEnabled
                                                             then RetEnableInterrupt
                                                             else RetDisableInterrupt))
                         /\ In Perm.Exec linkCap.(capPerms))
@@ -696,11 +696,11 @@ Section Machine.
     | Inst_Exn exnInst (wf: WfExnInst exnInst).
 
     (* WIP *)
-    Notation ThreadIdx := nat (only parsing).
+    Abbreviation ThreadIdx := nat (only parsing).
     Inductive SameThreadEvent :=
     | Ev_Exception
-    | Ev_Call (pcc: PCC) (rf: RegisterFile) (is: InterruptStatus)
-    | Ev_Ret (pcc: PCC) (rf: RegisterFile) (is: InterruptStatus)
+    | Ev_Call (pcc: PCC) (rf: RegisterFile) (ints: InterruptStatus)
+    | Ev_Ret (pcc: PCC) (rf: RegisterFile) (ints: InterruptStatus)
     | Ev_General.
     Inductive Event :=
     | Ev_SwitchThreads (idx: nat)

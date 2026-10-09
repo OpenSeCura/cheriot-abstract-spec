@@ -19,7 +19,7 @@ From Stdlib Require Import List Lia Bool Nat NArith.
 From cheriot Require Import Tactics.
 Import ListNotations.
 
-Notation EqDecider f := (forall x y, BoolSpec (x = y) (x <> y) (f x y)).
+Abbreviation EqDecider f := (forall x y, BoolSpec (x = y) (x <> y) (f x y)).
 
 Module Combinators.
   Section __.
@@ -349,8 +349,8 @@ Qed.
 
 Ltac simplify_nat :=
   repeat match goal with
-  | H: _ <? _ = true |- _ => rewrite PeanoNat.Nat.ltb_lt in H
-  | H: _ <? _ = false |- _ => rewrite PeanoNat.Nat.ltb_nlt in H
+  | H: (_ <? _) = true |- _ => rewrite PeanoNat.Nat.ltb_lt in H
+  | H: (_ <? _) = false |- _ => rewrite PeanoNat.Nat.ltb_nlt in H
   | _ => lia                                                                       
   end.
 Module Separation.

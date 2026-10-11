@@ -54,8 +54,8 @@ Class MachineTypeParams := {
     modeled; where a definition encodes one of its mechanisms, the comment says which. *)
 Section Machine.
 
-  (** Both parameter classes are section context: every definition below takes them as implicit
-      arguments. *)
+  (** Both parameter classes are section context: the definitions below that use them take them
+      as implicit arguments. *)
   Context [ISA: ISA_params].
   Context {machineTypeParams: MachineTypeParams}.
 
@@ -83,12 +83,12 @@ Section Machine.
    *)
 
   (** The two store labels.  A capability carries the labels it may store ([capCanStore]) and the
-      labels under which it may itself be stored ([capCanBeStored]); [ValidMemCapUpdate] admits a
-      stored capability only where a label of the authorizing capability's [capCanStore] is among
-      the stored capability's [capCanBeStored].  In CHERIoT, [Local] is the label of a capability
-      without the global bit, which may be stored only through a capability with the store-local
-      permission, and [NonLocal] is the label of a global one, which may be stored wherever
-      capabilities may be stored. *)
+      labels under which it may itself be stored ([capCanBeStored]); among its other conditions,
+      [ValidMemCapUpdate] admits a stored capability only where a label of the authorizing
+      capability's [capCanStore] is among the stored capability's [capCanBeStored].  In CHERIoT,
+      [Local] is the label of a capability without the global bit, which may be stored only
+      through a capability with the store-local permission, and [NonLocal] is the label of a
+      global one, which may be stored wherever capabilities may be stored. *)
   Inductive Label :=
   | Local
   | NonLocal.
@@ -96,11 +96,13 @@ Section Machine.
 
   (* Represents Call and Return sentries *)
 
-  (** The sentry kinds of the CHERIoT ISA.  A sentry is a sealed code capability that can be
-      jumped to but not inspected or modified.  A forward sentry is the target of a call and
-      fixes what the call does to the interrupt status: enable, disable, or inherit it
-      ([WfCallSentryInst]).  A backward sentry is the target of a return and enables or disables
-      interrupts ([WfRetSentryInst]). *)
+  (** The sentry kinds of the CHERIoT ISA.  A sentry is a sealed code capability: it can be
+      jumped to, and its holder can neither unseal it nor use it as a data capability; the only
+      change the reachability relation admits to a sealed capability is a narrowing of where it
+      may be stored ([RestrictSealed]).  A forward sentry is the target of a call and fixes what
+      the call does to the interrupt status: enable, disable, or inherit it ([WfCallSentryInst]).
+      A backward sentry is the target of a return and enables or disables interrupts
+      ([WfRetSentryInst]). *)
   Inductive Sentry :=
   | CallEnableInterrupt
   | CallDisableInterrupt
@@ -152,7 +154,10 @@ Section Machine.
       Memory as a total function from addresses to bytes. *)
   Definition Memory_t := Addr -> Byte.
 
-  (** The tags, one per capability slot: set when the slot holds a capability. *)
+  (** The tags, one per capability slot, meant to be set exactly when the slot holds a
+      capability.  The model does not enforce that reading: a byte write leaves the tag as it was
+      ([writeCapOrBytes]), and clearing a tag is a separate kind of update
+      ([ValidMemTagRemoval]). *)
   Definition Tag_t := CapAddr -> bool.
 
   (** Memory and tags together; every operation that may read or write a capability takes both. *)
@@ -211,8 +216,10 @@ Section Machine.
                                                                                       then t
                                                                                       else tags i).
 
-  (** Store a capability in slot [capa]: its encoding into the slot's bytes, and the slot's tag
-      set. *)
+  (** Store a capability at slot [capa]: its encoding ([capToBytes]) written from the slot's
+      first address, and the slot's tag set.  Nothing in [CapEncodeDecode] fixes the encoding's
+      length to one slot; that the bytes stay within the slot is the encoding's business, not
+      this definition's. *)
   Definition writeMemTagCap (mem: Memory_t) (tags: Tag_t) (capa: CapAddr) (c: Cap) : FullMemory :=
     let a := fromCapAddr capa in
     (writeMemBytes mem a (capToBytes c), writeTagTag tags capa true).
@@ -243,8 +250,9 @@ Section Machine.
   (** [writeMemTagCap] on both halves. *)
   Definition writeCap (mem: FullMemory) := writeMemTagCap (fst mem) (snd mem).
 
-  (** Write a read value back at [a]: a capability goes into the slot [a] falls in, with its tag
-      set; bytes go into memory with the tags left as they are. *)
+  (** Write a read value back at [a]: a capability is written from the first address of the slot
+      [a] falls in, with that slot's tag set; bytes go into memory with the tags left as they
+      are. *)
   Definition writeCapOrBytes (mem: FullMemory) (a: Addr) (v: CapOrBytes) : FullMemory :=
     match v with
     | inl cap => writeCap mem (toCapAddr a) cap
@@ -256,6 +264,9 @@ Section Machine.
       state uses. *)
   Definition ExnInfo := Bytes.
 
+  (** Operations on a single capability: changing its seal, cursor and bounds; the sentry,
+      sealed-data and sealed predicates; and the load-side attenuation that [capKeepPerms],
+      [capKeepCanStore] and [capKeepCanBeStored] prescribe. *)
   Section CapHelpers.
     Definition setCapSealed (c: Cap) (seal: option SealT) : Cap :=
       {| capSealed := seal;
@@ -796,13 +807,14 @@ Section Machine.
         as a function and a proof that the function is well formed.  A general instruction
         ([Inst_General]) acts on the user and system contexts under [WfGeneralInst], which
         includes the per-instruction monotonicity of reachable capabilities; a call ([Inst_Call])
-        jumps through the forward sentry in register [srcReg], leaving a backward sentry to the
-        caller in the link register when [optLink] names one, under [WfCallSentryInst]; a return
-        ([Inst_Ret]) jumps through the backward sentry in [srcReg] under [WfRetSentryInst]; an
-        exception instruction ([Inst_Exn]) always traps, with the payload [exnInst] computes,
-        under [WfExnInst].  Because the proof travels with the instruction, whoever builds an
-        [Inst] discharges its well-formedness: nothing in this file proves it, and no concrete
-        instruction set is given here. *)
+        jumps through the capability in register [srcReg], a forward sentry or, as
+        [WfCallSentryInst] stands (its own comment marks the question), an unsealed code
+        capability, leaving a backward sentry to the caller in the link register when [optLink]
+        names one; a return ([Inst_Ret]) jumps through the backward sentry in [srcReg] under
+        [WfRetSentryInst]; an exception instruction ([Inst_Exn]) traps, with the payload
+        [exnInst] computes when the fetch is permitted, under [WfExnInst].  Because the proof
+        travels with the instruction, whoever builds an [Inst] discharges its well-formedness:
+        nothing in this file proves it, and no concrete instruction set is given here. *)
     Inductive Inst :=
     | Inst_General generalInst (wf: WfGeneralInst generalInst)
     | Inst_Call (srcReg: RegIdx) (optLink: option RegIdx) callSentryInst
@@ -945,8 +957,9 @@ Section Machine.
 
 
         (** The thread-step relation on the context: if the fetch is in bounds the step is
-            [threadStepFunction]; if not, it is the trap [pccNotInBounds].  Given the context,
-            exactly one of the two applies. *)
+            [threadStepFunction]; if not, it is the trap [pccNotInBounds].  The two cases exclude
+            each other, and together they cover every context classically: [fetchAddrsInBounds]
+            is a proposition with no decision procedure here. *)
         Inductive ThreadStep : ((UserContext * SystemContext) * SameThreadEvent) -> Prop :=
         | GoodThreadStep (inBounds: fetchAddrsInBounds) : ThreadStep threadStepFunction
         | BadUserFetch (notInBounds: ~ fetchAddrsInBounds) : ThreadStep (exceptionState pccNotInBounds).
@@ -985,11 +998,12 @@ Section Machine.
                    nth_error m2.(machine_threads) m2.(machine_curThreadId) = Some (Build_Thread userSt' sysSt')),
           SameThreadStep m1 m2 (Ev_SameThread m2.(machine_curThreadId) ev).
 
-      (** The step relation over a machine and its trace.  Either the current thread changes
+      (** The step relation over a machine and its trace.  Either a thread switch
           ([Step_SwitchThreads]): allowed only with interrupts enabled, to any index below the
-          thread count, and nothing but the current thread index changes; or the current thread
-          takes a [SameThreadStep].  Each step conses its event onto the trace.  The properties
-          module states what holds of every reachable state as an invariant over this relation. *)
+          thread count, the current one included, and nothing but the current thread index
+          changes; or the current thread takes a [SameThreadStep].  Each step conses its event
+          onto the trace.  The properties module states what holds of every reachable state as an
+          invariant over this relation. *)
       Inductive MachineStep : Machine * Trace -> Machine * Trace -> Prop :=
       | Step_SwitchThreads m tr tid'
           (iEnabled: m.(machine_interruptStatus) = InterruptsEnabled)

@@ -123,9 +123,9 @@ Section Machine.
       through a capability lacking the load-mutable permission strips the loaded capability's
       store permissions, and one lacking the load-global permission strips its global bit.
 
-      With bounds a list, any set of addresses is representable; the constraints the encoding
-      imposes are left to [CapEncodeDecode] and to the validation module at the end of the file.
-      The cursor may lie outside the bounds, as the field's comment explains. *)
+      With bounds a list, any finite set of addresses is representable; the constraints the
+      encoding imposes are left to [CapEncodeDecode] and to the validation module at the end of
+      the file.  The cursor may lie outside the bounds, as the field's comment explains. *)
   Record Cap := {
       capSealed: option SealT;
       capPerms: list Perm.t;
@@ -850,7 +850,8 @@ Section Machine.
 
         The step relation, parametric in how an instruction is fetched ([fetchAddrs]: the
         addresses read for a program counter), how the fetched bytes are decoded ([decode]), and
-        the payload a fetch outside the PCC's bounds traps with ([pccNotInBounds]). *)
+        the payload a fetch that fails the PCC check traps with ([pccNotInBounds]; the check,
+        [fetchAddrsInBounds], covers bounds, sealing and execute permission). *)
     Section FetchDecodeExecute.
 
       (** Which addresses a fetch at a program counter reads, given the memory. *)
@@ -870,8 +871,9 @@ Section Machine.
           fetchAddrs mem1 addr = fetchAddrs mem2 addr.
       Context {fetchAddrsOk: FetchAddrsOk}.
 
-      (** The decoder, from the fetched bytes to an [Inst], and the trap payload for a fetch
-          outside the PCC's bounds. *)
+      (** The decoder, from the fetched bytes to an [Inst], and the trap payload for a fetch that
+          fails the PCC check: the name says bounds, but [ThreadStep] uses it whenever
+          [fetchAddrsInBounds] fails, so also for a sealed PCC or one without execute permission. *)
       Variable decode : list Byte -> Inst.
       Variable pccNotInBounds: EXNInfo.
 
@@ -909,16 +911,16 @@ Section Machine.
         Definition mtcc := (fst sc).(thread_mtcc).
 
         (** The context after a trap with payload [exnInfo]: execution continues at [mtcc] with
-            the register file unchanged, [mepcc] saves the faulting [pcc], the payload is
-            recorded, and the trusted stack, liveness, memory and interrupt status are as before.
-            The event is [Ev_Exception]. *)
+            the register file unchanged, the new system state's MEPCC field holds the faulting
+            [pcc] (the old [mepcc] is discarded), the payload is recorded, and the trusted stack,
+            liveness, memory and interrupt status are as before.  The event is [Ev_Exception]. *)
         Definition exceptionState (exnInfo: EXNInfo): (UserContext * SystemContext) * SameThreadEvent :=
           (((Build_UserThreadState rf mtcc, mem),
              (Build_SystemThreadState pcc mtcc exnInfo sts.(thread_trustedStack) sts.(thread_alive), ints)
            ), Ev_Exception).
 
-        (** One step of the thread when the fetch is in bounds.  The bytes at the addresses
-            [fetchAddrs] gives for the PCC's cursor are decoded, and the instruction's function
+        (** One step of the thread when the PCC check holds.  The bytes at the addresses that
+            [fetchAddrs] returns for the PCC's cursor are decoded, and the instruction's function
             runs: a general instruction yields new user and system contexts ([Ev_General]); a
             call yields the new PCC, register file and interrupt status, with the system thread
             state and memory unchanged ([Ev_Call]); a return yields the new PCC and interrupt
@@ -956,10 +958,10 @@ Section Machine.
                                          /\ In Perm.Exec pcc.(capPerms).                                                            
 
 
-        (** The thread-step relation on the context: if the fetch is in bounds the step is
-            [threadStepFunction]; if not, it is the trap [pccNotInBounds].  The two cases exclude
-            each other, and together they cover every context classically: [fetchAddrsInBounds]
-            is a proposition with no decision procedure here. *)
+        (** The thread-step relation on the context: if the PCC check [fetchAddrsInBounds] holds
+            the step is [threadStepFunction]; if not, it is the trap [pccNotInBounds].  The two
+            cases exclude each other, and together they cover every context classically:
+            [fetchAddrsInBounds] is a proposition with no decision procedure here. *)
         Inductive ThreadStep : ((UserContext * SystemContext) * SameThreadEvent) -> Prop :=
         | GoodThreadStep (inBounds: fetchAddrsInBounds) : ThreadStep threadStepFunction
         | BadUserFetch (notInBounds: ~ fetchAddrsInBounds) : ThreadStep (exceptionState pccNotInBounds).

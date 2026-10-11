@@ -30,6 +30,7 @@ Import Separation.
 
 (* Defining the valid initial states of a machine in terms of
    compartments and thread initialization. *)
+
 (** * Configurations and the global invariant
 
     How a CHERIoT system is described to the model, and what is true of every reachable
@@ -43,6 +44,7 @@ Import Separation.
     build on these definitions.  MMIO and shared objects are not modeled yet; the TODO
     markers below say where. *)
 Module Configuration.
+
   (** Instruction-set and machine parameters, as in [Spec]; nothing here depends on a
       particular capability encoding. *)
   Section WithContext.
@@ -161,6 +163,7 @@ Module Configuration.
         configInitMemory: FullMemory;
         configSwitcher: SwitcherConfig;
     }.
+
     (** The addresses a compartment owns: those of its PCC and, if it has one, its CGP. *)
     Definition compartmentFootprint (compartment: Compartment) : list Addr :=
         compartment.(compartmentPCC).(capAddrs) ++
@@ -180,6 +183,7 @@ Module Configuration.
       | ImportEntry_SealedCapToExportEntry c => c
       | ImportEntry_SentryToLibraryFunction c => c
       end.                                                    
+
     (** The capabilities a compartment holds before it runs: its PCC, its CGP if any, its
         imports and its sealing capabilities.  In the initial memory, everything the compartment
         can reach derives from these without loading ([WFCompartment_InitialCaps]). *)
@@ -206,7 +210,7 @@ Module Configuration.
         in any memory with every tag cleared, that is, without loading a capability from
         memory.  Used to say that a compartment's reach is fixed by its auditable initial
         set. *)
-    (* The total set of capabilities reachable from a compartment are
+    (* The total set of capabilities reachable from a compartment is
        the PCC+CGP+imports. *)
     Definition AllReachableCaps (mem: FullMemory) (caps: list Cap) :=
       forall cap,
@@ -245,7 +249,7 @@ Module Configuration.
        In (ImportEntry_SealedCapToExportEntry cap) compartment.(compartmentImports).
 
     (** The capability's addresses all lie within some library's footprint. *)
-    (* A capability is in a library of its addresses belong to a library *)
+    (* A capability is in a library if its addresses belong to a library *)
     Definition InLibraryFootprint (config: Config) (cap: Cap) :=
       exists library, In library config.(configCompartments) /\
                       isLibrary library = true /\
@@ -278,7 +282,7 @@ Module Configuration.
                      InLibraryFootprint config cap /\
                      ValidPCCPerms cap  
         ) /\
-        (* All sealed caps to export entries are sealed with the switcher key and point to an export table.*)
+        (* All sealed caps to export entries are sealed with the switcher key and point to an export table. *)
         (forall cap, importEntry = ImportEntry_SealedCapToExportEntry cap ->
                      cap.(capSealed) = Some (inr config.(configSwitcher).(Switcher_key)) /\
                      ~(In Perm.Store cap.(capPerms)) /\
@@ -326,6 +330,7 @@ Module Configuration.
     (** What is required of the switcher's own compartment: nothing yet; its behavior is
         constrained by [SwitcherProperty] instead. *)
     Definition WFSwitcher (c: Compartment) : Prop := True.
+
     (** The index of the switcher's compartment. *)
     Definition switcherIdx config := (config.(configSwitcher).(Switcher_compartmentIdx)).
     
@@ -402,6 +407,7 @@ Module Configuration.
         exception path. *)
     Definition InSystemMode (st: ThreadState) : Prop :=
       In Perm.System (Spec.pcc st).(capPerms).
+
     (** The same test on a [Thread]. *)
     Definition ThreadInSystemMode (t: Thread) :=
       In Perm.System t.(thread_userState).(thread_pcc).(capPerms).
@@ -456,9 +462,10 @@ Module Configuration.
     (* Based on the initial configuration, we can statically determine
        whether a capability corresponds to a compartment's export table
        entry and if so, which compartment and which entry.
-       TOOD: add a well-formedness condition as below.
+       TODO: add a well-formedness condition as below.
      *)
     Context (LookupExportTableCompartmentId: Config -> Cap -> option (nat * nat)).
+
     (** The condition the lookup is meant to satisfy: the capability's addresses lie in that
         compartment's export table and the entry exists. *)
     Definition WFLookupExportTableCompartmentId :=
@@ -536,6 +543,7 @@ Module Configuration.
           ValidCSP frame.(trustedStackFrame_CSP) /\
           Restrict meta.(initThreadCSP) frame.(trustedStackFrame_CSP)
       }.
+
     (** Every frame on a trusted stack holds a valid CSP and names a callee that is a
         compartment proper (one with a CGP) with an existing export entry. *)
     Definition ValidTrustedStack (config: Config) (trustedStack: TrustedStack) : Prop :=
@@ -678,6 +686,7 @@ Module Configuration.
       (** The address lies in the switcher's compartment. *)
       Definition AddrInSwitcherFootprint (config: Config) (addr: Addr) :=
         AddrInCompartment config (switcherIdx config) addr.
+
       (** Every address of the list lies in the switcher's compartment. *)
       Definition AddrsInSwitcherFootprint (config: Config) (addr: list Addr) :=
         forall a, In a addr -> AddrInCompartment config (switcherIdx config) a.
@@ -2523,6 +2532,7 @@ Module ThreadIsolatedMonotonicity.
   Import ListNotations.
   Import Configuration.
   Import Separation.
+
   (** The instruction-set and machine parameters the module is generic over.  Nothing below
       depends on a particular capability encoding, fetch function or decoder: the theorem
       holds for every instantiation of these parameters. *)
@@ -2533,6 +2543,7 @@ Module ThreadIsolatedMonotonicity.
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
     Context {pccNotInBounds : EXNInfo}.
+
     (** Local abbreviations: the step relations instantiated with this section's parameters. *)
     Abbreviation AddrOffset := nat (only parsing).
     Abbreviation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
@@ -2554,6 +2565,7 @@ Module ThreadIsolatedMonotonicity.
       | Ev_SameThread _ Ev_General => True
       | _ => False
       end.
+
     (** A trace is same-domain when every event in it is. *)
     Definition SameDomainTrace (tr: Trace) : Prop :=
       Forall SameDomainEvent tr.
@@ -2616,6 +2628,7 @@ Module ThreadIsolatedMonotonicity.
           Inv_Isolation: IsolatedThreads machine;
           Inv_Monotonicity: IsolatedMonotonicity machine
         }.
+
       (** The inductive invariant.  [GlobalInvariant] (the current thread index is in range
           and every thread has a well-formed register file) holds in every reachable state,
           and [Invariant'] holds whenever the trace so far is same-domain.  A trace only
@@ -2624,6 +2637,7 @@ Module ThreadIsolatedMonotonicity.
       Definition Invariant (st: State) :=
         GlobalInvariant config (fst st) /\
         (SameDomainTrace (snd st) -> Invariant' (fst st)).
+
       (** The two projections of [Invariant'], for [eauto with invariants]. *)
       Hint Resolve Inv_Monotonicity : invariants.
       Hint Resolve Inv_Isolation: invariants.
@@ -2644,6 +2658,7 @@ Module ThreadIsolatedMonotonicity.
           + cbv [SameDomainTrace ThreadReachableCapSubset ReachableCapSubset ValidInitialMachine IsolatedMonotonicity].
             apply Forall2_refl. auto.
       Qed.
+
       (** The number of threads never changes: [GlobalInvariant] pairs the machine's threads
           with the configuration's thread metadata, in the initial and in the current state. *)
       Lemma GlobalInvariant_length:
@@ -2678,6 +2693,7 @@ Module ThreadIsolatedMonotonicity.
       Proof.
         intros. eapply Forall2_nth_error2 with (1 := Inv_Monotonicity _ H); eauto.
       Qed.
+
       (** From pairwise read/write disjointness, the one-directional form the separation lemmas
           take: no address thread [i] can write is an address thread [j] can read. *)
       Lemma IsolatedImpliesWriteReadDisjoint:

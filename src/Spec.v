@@ -88,7 +88,8 @@ Section Machine.
       capability's [capCanStore] is among the stored capability's [capCanBeStored].  In CHERIoT,
       [Local] is the label of a capability without the global bit, which may be stored only
       through a capability with the store-local permission, and [NonLocal] is the label of a
-      global one, which may be stored wherever capabilities may be stored. *)
+      global one, which may be stored wherever capabilities may be stored; in the model that is
+      a capability whose [capCanStore] contains the stored one's label. *)
   Inductive Label :=
   | Local
   | NonLocal.
@@ -122,6 +123,8 @@ Section Machine.
       by [attenuate]).  The last three model the ISA's load-side attenuation, by which a load
       through a capability lacking the load-mutable permission strips the loaded capability's
       store permissions, and one lacking the load-global permission strips its global bit.
+      Permissions and [capCanStore] are attenuated only when the loaded capability is unsealed;
+      a sealed one has only its [capCanBeStored] narrowed.
 
       With bounds a list, any finite set of addresses is representable; the constraints the
       encoding imposes are left to [CapEncodeDecode] and to the validation module at the end of
@@ -860,8 +863,9 @@ Section Machine.
 
       (** A fetch that depends on nothing but the bytes at addresses fixed by the program
           counter: some function of the counter alone gives addresses such that two memories
-          agreeing on their bytes give the same fetch.  Declared as context just below; none of
-          the definitions of this section refer to it, so it is not a parameter of [MachineStep]. *)
+          agreeing on the bytes at those addresses give the same fetch.  Declared as context
+          just below; none of the definitions of this section refer to it, so it is not a
+          parameter of [MachineStep]. *)
       Definition FetchAddrsOk :=
         exists (fn: Addr -> list Addr),
         forall mem1 mem2 addr,

@@ -33,8 +33,9 @@ Import Separation.
 
 (** * Configurations and the global invariant
 
-    How a CHERIoT system is described to the model, and what is true of every reachable
-    state of a well-formed one.  A [Config] names the compartments (code and data
+    How a CHERIoT system is described to the model, and the invariant every reachable state
+    of a well-formed one keeps ([GlobalInvariant]: a current thread index in range, and
+    [ThreadInv] for every thread).  A [Config] names the compartments (code and data
     capabilities, import and export tables, sealing capabilities), the threads' initial
     stacks and starting compartments, the initial memory and the switcher.  [WFConfig] says
     when such a description is well formed, [ValidInitialState] when a machine is a
@@ -76,10 +77,9 @@ Module Configuration.
         errorHandlerType: handlerType
     }.
 
-    (** One entry of a compartment's import table, the only two ways a compartment initially
-        refers outside itself: a capability sealed with the switcher's key that denotes an
-        export-table entry of another compartment (the target of a compartment call), or a
-        sentry to a library function. *)
+    (** One entry of a compartment's import table, the two kinds of import this model has: a
+        capability sealed with the switcher's key that denotes an export-table entry of another
+        compartment (the target of a compartment call), or a sentry to a library function. *)
     (* Simplifying, for now, and eliding MMIO and shared objects. *)
     Inductive ImportEntry :=
     | ImportEntry_SealedCapToExportEntry (c: Cap)
@@ -133,9 +133,9 @@ Module Configuration.
 
     (** The trusted switcher as the configuration sees it: which compartment it is, the
         addresses of its four entry points (compartment call, exception entry, return after a
-        compartment call, return from an error handler) and the sealing key that is
-        exclusively its own.  The entry-point addresses are what sentries and the MTCC point
-        at. *)
+        compartment call, return from an error handler) and the sealing key whose unsealing
+        [WFConfig] restricts to the switcher's compartment.  The entry-point addresses are what
+        sentries and the MTCC point at. *)
     (* Compartments can have sealed forward sentries to
        compartment_switcher_entry. When in user mode, compartments'
        MTCC points to exception_entry_asm. The switcher may pass
@@ -293,12 +293,13 @@ Module Configuration.
     Definition ValidSealingCap (c: Cap) :=
       Subset c.(capPerms) [Perm.Sealing;Perm.Unsealing].
     
-    (** A well-formed compartment.  Its reach is confined to its footprint and derivable from
-        its initial capabilities without loading; its PCC and CGP are unsealed with the
-        permitted permissions; every sentry or sealed reference it can reach was declared in
-        its import table, and every import entry is well formed; its sealing capabilities are
-        proper and none of them can seal with the switcher's key.  The reachability clauses are
-        judged in the initial memory; the others constrain the capabilities themselves. *)
+    (** A well-formed compartment.  The addresses it can read, write or execute lie within its
+        footprint, and its reach is derivable from its initial capabilities without loading; its
+        PCC and CGP are unsealed with the permitted permissions; every sentry or sealed reference
+        it can reach was declared in its import table, and every import entry is well formed;
+        its sealing capabilities are proper and none of them can seal with the switcher's key.
+        The reachability clauses are judged in the initial memory; the others constrain the
+        capabilities themselves. *)
     Record WFCompartment (config: Config) (c: Compartment) :=
       {
         (* All RWX addresses reachable by a compartment belong to the compartment's footprint. *)
@@ -2505,9 +2506,10 @@ End CompartmentIsolationValidation.
 (* From any valid initial state where threads are isolated (their reachable
    read/write caps are disjoint), for any sequence of same-domain (Ev_General)
    steps, the reachable caps in each thread do not increase. *)
+
 (** * Thread-isolated monotonicity
 
-    The main result of this development.  For a well-formed configuration and an initial
+    The main proved result of this development.  For a well-formed configuration and an initial
     machine whose threads can read or write only pairwise-disjoint sets of addresses, every
     same-domain execution keeps each thread's reachable capabilities within the set reachable
     from its initial state.  Thread isolation is the hypothesis on the initial machine; the
@@ -2659,8 +2661,9 @@ Module ThreadIsolatedMonotonicity.
             apply Forall2_refl. auto.
       Qed.
 
-      (** The number of threads never changes: [GlobalInvariant] pairs the machine's threads
-          with the configuration's thread metadata, in the initial and in the current state. *)
+      (** A machine satisfying [GlobalInvariant] has as many threads as the initial machine:
+          the invariant pairs the machine's threads with the configuration's thread metadata, in
+          the initial and in the current state. *)
       Lemma GlobalInvariant_length:
         forall m,
           GlobalInvariant config m ->

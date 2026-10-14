@@ -1,6 +1,6 @@
 # cheriot-abstract-spec
 
-A Rocq model intended to describe the CHERIoT execution model as the CHERIoT RTOS presents it to user code: a multithreaded machine whose threads run in CHERI compartments, where a thread switch, a cross-compartment call or return, and the entry of an exception handler are single steps rather than sequences of instructions, each with a semantics supplied per instruction under a well-formedness condition.  The development states what a well-formed configuration of compartments and threads is, defines the step relation of the machine, states the contracts of the RTOS switcher separately from that relation (they are specified, not proved, and not connected to the step relation), and proves one top-level theorem: on same-domain executions, no thread gains reach over capabilities it could not already reach at the start.
+A formalization in [Rocq](https://rocq-prover.org/) intended to describe the CHERIoT execution model as the CHERIoT RTOS presents it to user code: a multithreaded machine whose threads run in CHERI compartments, where a thread switch, a cross-compartment call or return, and the entry of an exception handler are single steps rather than sequences of instructions, each with a semantics supplied per instruction under a well-formedness condition.  The development states what a well-formed configuration of compartments and threads is, defines the step relation of the machine, states the contracts of the RTOS switcher separately from that relation (they are specified, not proved, and not connected to the step relation), and proves one top-level theorem: on same-domain executions, no thread gains reach over capabilities it could not already reach at the start.
 
 ## What is modeled
 
@@ -8,8 +8,8 @@ A Rocq model intended to describe the CHERIoT execution model as the CHERIoT RTO
 - **Memory** as bytes with a tag per capability slot, read and written through capabilities, with the conditions under which a store of a capability, a tag removal, or a data write is valid.
 - **Reachability**: the capabilities and addresses a set of capabilities can reach by loading, restricting, sealing and unsealing, which is the quantity the theorem bounds.
 - **Threads and the machine**: a register file, PCC, MEPCC and MTCC, a trusted stack of frames and a liveness status per thread; a current thread index, a memory and an interrupt status for the machine.
-- **Instructions** of four kinds, each carrying its own semantics as a function and a proof that the function is well formed: general instructions, compartment calls through a sentry, compartment returns, and exception entries.  The well-formedness condition of a general instruction includes that it does not increase the set of reachable capabilities; the development does not provide a concrete instruction set and does not prove that condition for one.
-- **Steps and events**: a thread step fetches, decodes and executes one instruction, or traps when the fetch is not permitted; a machine step is a step of the current thread or a switch of the current thread, and each records an event in a trace.
+- **Instructions** of four kinds (general instructions, compartment calls through a sentry, compartment returns, and exception entries: the constructors `Inst_General`, `Inst_Call`, `Inst_Ret` and `Inst_Exn` of `Inst`), each carrying its own semantics as a function and a proof that the function is well formed.  The well-formedness condition of a general instruction includes that it does not increase the set of reachable capabilities; the development does not provide a concrete instruction set and does not prove that condition for one.
+- **Steps and events**: a thread step fetches, decodes and executes one instruction, or traps when the fetch is not permitted; a machine step is a step of the current thread or a thread switch, which, while interrupts are enabled, makes any thread the current one by its index and leaves the memory and every thread's state unchanged (the model's atomic form of the RTOS's context switch: each thread's registers live in its `Thread` record, so nothing is saved or restored); each step records an event in a trace.
 - **Configurations**: compartments with code and data capabilities, import and export tables and sealing capabilities, threads with their initial stacks and starting compartments, the initial memory, and the switcher with its entry points and sealing key; what makes such a configuration well formed and a machine a valid initial state of it.
 - **The switcher's contracts**: pre- and postconditions of the switcher's entry points (exception entry and return, compartment call and return, stack unwinding) in terms of the registers and the memory at the time of entry, written as an abstraction of the switcher in CHERIoT RTOS's `entry.S`.  They are specified, not proved, and nothing in the model connects them to the step relation; see "Status".
 
@@ -36,6 +36,16 @@ prints `Closed under the global context`.  Rocq 9.1.0 does not build the current
 ## The theories
 
 Five files, in dependency order.  `Tactics.v` and `Utils.v` are support; `Spec.v` is the model; `SpecLemmas.v` and `Properties.v` are what is proved and specified about it.
+
+| Theory | Role | Imports from `cheriot` | Depends on, transitively |
+|---|---|---|---|
+| [`src/Tactics.v`](src/Tactics.v) | proof automation | none | none |
+| [`src/Utils.v`](src/Utils.v) | combinators, list and set lemmas, separation | `Tactics` | `Tactics` |
+| [`src/Spec.v`](src/Spec.v) | the model | `Utils` | `Utils`, `Tactics` |
+| [`src/SpecLemmas.v`](src/SpecLemmas.v) | lemmas about the model | `Spec`, `Utils`, `Tactics` | `Spec`, `Utils`, `Tactics` |
+| [`src/Properties.v`](src/Properties.v) | configurations, the switcher's contracts, compartment isolation, the main theorem | `Spec`, `Utils`, `Tactics`, `SpecLemmas` | `SpecLemmas`, `Spec`, `Utils`, `Tactics` |
+
+Every file imports `List`, `Lia`, `Bool`, `Nat` and `NArith` from `Stdlib`; `Tactics.v` and `Properties.v` also import `String`.  The last column is the closure of the imports; nothing outside `Stdlib` and these five files is used.
 
 ### `Tactics.v`
 
@@ -78,6 +88,8 @@ Four modules, each binding its parameters in a `WithContext` section (the `WithC
 
 ## The main theorem
 
+The theorem is stated and proved at the end of [`src/Properties.v`](src/Properties.v#L2558-L2569), in module `ThreadIsolatedMonotonicity`: the statement at lines 2558 to 2562 and the proof at lines 2563 to 2569, which applies the three lemmas `InvariantInitial` (line 2388), `InvariantStep` (line 2520) and `InvariantUse` (line 2541) to the `always` combinator.  The property it states, `PThreadIsolatedMonotonicity`, is defined at [line 2372](src/Properties.v#L2372).  Line numbers are those of the sources at commit `1088d46`; later changes to `Properties.v` move them.
+
 ```
 Theorem ThreadIsolatedMonotonicity :
   forall config initial_machine,
@@ -88,7 +100,7 @@ Theorem ThreadIsolatedMonotonicity :
 
 Take a well-formed configuration and a valid initial machine whose threads start with pairwise-disjoint read/write reach.  In every state reachable by the step relation whose trace so far contains only same-domain events (thread switches and general instructions, as opposed to compartment calls, compartment returns and exceptions), each thread can reach only capabilities that were reachable from its initial state.  Thread isolation is a hypothesis on the initial machine and a conjunct of the proof's invariant, not a conclusion of the theorem.
 
-What it does not say: `PThreadIsolatedMonotonicity` is an implication from the whole trace being same-domain, so after the first compartment call, compartment return or exception the property holds vacuously, and the theorem claims nothing about such events or about what follows them.  The switcher's contracts, which govern those events, are specified in `SwitcherProperty` and not proved.  Per-instruction monotonicity is assumed, not proved: it is part of `WfGeneralInst`, the proof obligation every general instruction carries, and the theorem lifts it to whole executions.  The theorem is parametric in the capability encoding, the fetch function and the decoder, and says nothing about any particular one.
+**What it does not say**: `PThreadIsolatedMonotonicity` is an implication from the whole trace being same-domain, so after the first compartment call, compartment return or exception the property holds vacuously, and the theorem claims nothing about such events or about what follows them.  The switcher's contracts, which govern those events, are specified in `SwitcherProperty` and not proved.  Per-instruction monotonicity is assumed, not proved: it is part of `WfGeneralInst`, the proof obligation every general instruction carries, and the theorem lifts it to whole executions.  The theorem is parametric in the capability encoding, the fetch function and the decoder, and says nothing about any particular one.
 
 ## Status
 
@@ -110,11 +122,11 @@ What the model describes:
 
 - CHERIoT architecture specification: [cheriot-architecture.pdf](https://cheriot.org/cheriot-sail/cheriot-architecture.pdf) (capabilities, permissions, sentries and sealing as encoded by `CHERIoTValidation`).
 - CHERIoT RTOS: [`docs/architecture.md`](https://github.com/CHERIoT-Platform/cheriot-rtos/blob/main/docs/architecture.md) and the switcher, [`sdk/core/switcher/entry.S`](https://github.com/CHERIoT-Platform/cheriot-rtos/blob/main/sdk/core/switcher/entry.S) (the entry points and the trusted stack that `SwitcherProperty` specifies).
-- *CHERIoT: Complete Memory Safety for Embedded Devices*, MICRO 2023, and the Microsoft Research technical report [*CHERIoT: Rethinking security for low-cost embedded systems*](https://www.microsoft.com/en-us/research/publication/cheriot-rethinking-security-for-low-cost-embedded-systems) (2023).
+- Amar et al., [*CHERIoT: Complete Memory Safety for Embedded Devices*](https://doi.org/10.1145/3613424.3614266), MICRO 2023, and the Microsoft Research technical report [*CHERIoT: Rethinking security for low-cost embedded systems*](https://www.microsoft.com/en-us/research/publication/cheriot-rethinking-security-for-low-cost-embedded-systems) (2023).
 
 Related work:
 
-- Nienhuis et al., *Rigorous engineering for hardware security: Formal modelling and proof in the CHERI design and implementation process*, IEEE S&P 2020, and Bauereiss et al., *Verified Security for the Morello Capability-enhanced Prototype Arm Architecture*, ESOP 2022: reachable-capability monotonicity proved over ISA models, the property whose thread-level form is proved here.
+- Nienhuis et al., [*Rigorous engineering for hardware security: Formal modelling and proof in the CHERI design and implementation process*](https://doi.org/10.1109/SP40000.2020.00055), IEEE S&P 2020, and Bauereiss et al., [*Verified Security for the Morello Capability-enhanced Prototype Arm Architecture*](https://doi.org/10.1007/978-3-030-99336-8_7), ESOP 2022: reachable-capability monotonicity proved over ISA models, the property whose thread-level form is proved here.
 - [Griotte](https://arxiv.org/abs/2609.01110): a verified compartmentalization switcher for a CHERI machine.
 - [CHERIoT-Ibex observational correctness](https://arxiv.org/abs/2502.04738) and [VeriCHERI](https://arxiv.org/abs/2407.18679): verification of CHERIoT implementations at the RTL level.
 - Murali Vijayaraghavan, *Rigorous Hardware Software Codesign for Secure Compartmentalization on Embedded Devices*, [CHERITech25](https://cheri-alliance.org/wp-content/uploads/2025/11/3.3-Murali-Vijayaraghavan-Rigorous-Hardware-Software-Codesign-for-Secure-Compartmentalization-on-Embedded-Devices-CHERITech25.pdf) (November 2025): the framing of this model, with the RTOS specification as constraints on atomic operations.

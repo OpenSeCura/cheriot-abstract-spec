@@ -30,12 +30,34 @@ Import Separation.
 
 (* Defining the valid initial states of a machine in terms of
    compartments and thread initialization. *)
+
+(** * Configurations and the global invariant
+
+    How a CHERIoT system is described to the model, and the invariant every reachable state
+    of a well-formed one keeps ([GlobalInvariant]: a current thread index in range, and
+    [ThreadInv] for every thread).  A [Config] names the compartments (code and data
+    capabilities, import and export tables, sealing capabilities), the threads' initial
+    stacks and starting compartments, the initial memory and the switcher.  [WFConfig] says
+    when such a description is well formed, [ValidInitialState] when a machine is a
+    legitimate start of it, and [GlobalInvariant] is the part of that validity that every
+    [MachineStep] preserves ([GlobalInvariantStep]).  The thread-isolation theorem
+    ([ThreadIsolatedMonotonicity]) and the switcher contracts ([SwitcherProperty]) both
+    build on these definitions.  MMIO and shared objects are not modeled yet; the TODO
+    markers below say where. *)
 Module Configuration.
+
+  (** Instruction-set and machine parameters, as in [Spec]; nothing here depends on a
+      particular capability encoding. *)
   Section WithContext.
     Context [ISA: ISA_params].
     Context {machineTypeParams: MachineTypeParams}.
     Context {capEncodeDecode: CapEncodeDecode}.
 
+    (** One entry of a compartment's export table: a function the compartment exposes to
+        cross-compartment calls, as the switcher reads it.  The offset locates the entry point
+        relative to the compartment's code capability; the argument count and the interrupt
+        status are used by the compartment-call contract in [SwitcherProperty]; the stack size
+        is recorded but not yet used by this specification. *)
     Record ExportEntry : Type := {
         exportEntryOffset: nat; 
         exportEntryStackSize: nat;
@@ -43,20 +65,28 @@ Module Configuration.
         exportEntryInterruptStatus: InterruptStatus
       }.
 
+    (** Whether a compartment's error handler runs on the thread's stack or without one. *)
     Inductive handlerType :=
     | Stackful
     | Stackless.
     
+    (** A compartment's error handler, located by its offset from the compartment's code
+        capability. *)
     Record ErrorHandler := {
         errorHandlerOffset: nat; (* Offset from compartment's PCC *)
         errorHandlerType: handlerType
     }.
 
+    (** One entry of a compartment's import table, the two kinds of import this model has: a
+        capability sealed with the switcher's key that denotes an export-table entry of another
+        compartment (the target of a compartment call), or a sentry to a library function. *)
     (* Simplifying, for now, and eliding MMIO and shared objects. *)
     Inductive ImportEntry :=
     | ImportEntry_SealedCapToExportEntry (c: Cap)
     | ImportEntry_SentryToLibraryFunction (c: Cap).
 
+    (** Fetch, decode and the out-of-bounds exception the step relations take, and local
+        abbreviations instantiating them. *)
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
     Context {pccNotInBounds : EXNInfo}.
@@ -66,6 +96,10 @@ Module Configuration.
     Abbreviation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
     Abbreviation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
 
+    (** What the configuration fixes about a thread before it runs: its initial stack
+        capability (CSP) and the compartment it starts in.  Its entry point and register file
+        are left open; [ValidInitialThread] says what is required of its actual initial
+        state. *)
     Record InitialThreadMetadata := {
         (* initThreadEntryPoint: Addr; *)
         (* initThreadRf : RegisterFile; *)
@@ -73,6 +107,12 @@ Module Configuration.
         initThreadCompartment: nat
     }.
 
+    (** A compartment, or a library when it has no CGP.  Its code capability (PCC) covers its
+        code and read-only data, including the import entries; its global capability (CGP)
+        covers its mutable globals; the import and export tables, error handlers and sealing
+        capabilities are the rest of what the loader gives it.  The addresses where the
+        export-table entries themselves live are recorded so that they can be kept disjoint
+        from everything else ([ConfigFootprints]). *)
     (* TODO: MMIO *)
     Record Compartment := {
         compartmentPCC: Cap; (* Code and read-only data, including import entries *)
@@ -84,12 +124,18 @@ Module Configuration.
         compartmentSealingCaps: list Cap; (* Sealing and unsealing caps *)
       }.
 
+    (** A library is a compartment without globals: no CGP. *)
     Definition isLibrary (c: Compartment) :=
       match c.(compartmentCGP) with
       | None => true
       | _ => false
       end.
 
+    (** The trusted switcher as the configuration sees it: which compartment it is, the
+        addresses of its four entry points (compartment call, exception entry, return after a
+        compartment call, return from an error handler) and the sealing key whose unsealing
+        [WFConfig] restricts to the switcher's compartment.  The entry-point addresses are what
+        sentries and the MTCC point at. *)
     (* Compartments can have sealed forward sentries to
        compartment_switcher_entry. When in user mode, compartments'
        MTCC points to exception_entry_asm. The switcher may pass
@@ -105,6 +151,9 @@ Module Configuration.
         Switcher_key: Key; (* The switcher's exclusive key *)
     }.
 
+    (** A configuration: everything a well-formedness check or an initial-state check may
+        refer to.  The memory it carries is the initial memory, from which the read-only parts
+        are expected to stay unchanged. *)
     (* The initial state of a machine is defined in terms of its
        compartments, libraries, the trusted switcher, the initial
        state of the threads, and the initial memory. *)
@@ -114,21 +163,30 @@ Module Configuration.
         configInitMemory: FullMemory;
         configSwitcher: SwitcherConfig;
     }.
+
+    (** The addresses a compartment owns: those of its PCC and, if it has one, its CGP. *)
     Definition compartmentFootprint (compartment: Compartment) : list Addr :=
         compartment.(compartmentPCC).(capAddrs) ++
         (from_option capAddrs [] compartment.(compartmentCGP)).
 
+    (** The addresses of a thread's initial stack. *)
     Definition stackFootprint (t: InitialThreadMetadata) : list Addr :=
       t.(initThreadCSP).(capAddrs).
 
+    (** The addresses holding a compartment's export-table entries. *)
     Definition exportTableFootprint (c: Compartment) :=
       c.(compartmentExportTableAddrs).
 
+    (** The capability an import entry carries. *)
     Definition capsOfImportEntry (ie: ImportEntry) :=
       match ie with
       | ImportEntry_SealedCapToExportEntry c => c
       | ImportEntry_SentryToLibraryFunction c => c
       end.                                                    
+
+    (** The capabilities a compartment holds before it runs: its PCC, its CGP if any, its
+        imports and its sealing capabilities.  In the initial memory, everything the compartment
+        can reach derives from these without loading ([WFCompartment_InitialCaps]). *)
     (* The set of capabilities a compartment initially has access to. *)
     Definition capsOfCompartment (c: Compartment) :=
       [c.(compartmentPCC)]
@@ -136,17 +194,23 @@ Module Configuration.
       ++ (map capsOfImportEntry c.(compartmentImports))
       ++ (c.(compartmentSealingCaps)).
 
+    (** The address lies in the footprint of compartment [cid]. *)
     Definition AddrInCompartment (config: Config) (cid: nat) (addr: Addr): Prop :=
       exists compartment,
         nth_error config.(configCompartments) cid = Some compartment /\
           In addr (compartmentFootprint compartment).
 
+    (** The address lies in the initial stack of thread [tid]. *)
     Definition AddrInStack (config: Config) (tid: nat) (addr: Addr): Prop :=
       exists meta,
         nth_error config.(configThreads) tid = Some meta /\
         In addr (stackFootprint meta).
 
-    (* The total set of capabilities reachable from a compartment are
+    (** Every capability reachable from [caps] in memory [mem] is reachable from [caps] alone,
+        in any memory with every tag cleared, that is, without loading a capability from
+        memory.  Used to say that a compartment's reach is fixed by its auditable initial
+        set. *)
+    (* The total set of capabilities reachable from a compartment is
        the PCC+CGP+imports. *)
     Definition AllReachableCaps (mem: FullMemory) (caps: list Cap) :=
       forall cap,
@@ -154,6 +218,8 @@ Module Configuration.
         forall mem',
         ReachableCap (mem', fun _ => false) caps cap.
     
+    (** Every address a compartment can read, write or execute through its initial
+        capabilities lies in its own footprint. *)
     (* TODO: Not sufficient; need to include sealed caps. *)
     (* The addresses reachable from each compartment are all
        reachable from PCC or CGP.
@@ -162,9 +228,11 @@ Module Configuration.
       forall a, ReachableRWXAddr mem (capsOfCompartment compartment) a ->
                     In a (compartmentFootprint compartment).
                 
+    (** Unsealed, with its cursor inside its bounds. *)
     Definition ValidUnsealedCap (c: Cap) : Prop :=
       In c.(capCursor) c.(capAddrs) /\ c.(capSealed) = None.
 
+    (** Any sentry a compartment can reach is one declared in its import table. *)
     (* Any sentries initially reachable from a compartment must be present in the import table. *)
     Definition SentriesOnlyFromImportTables (mem: FullMemory) (compartment: Compartment) : Prop :=
       forall cap,
@@ -172,30 +240,41 @@ Module Configuration.
         isSentry cap = true ->
         In (ImportEntry_SentryToLibraryFunction cap) compartment.(compartmentImports).
 
+    (** Any sealed data capability a compartment can reach is one declared in its import
+        table, that is, a sealed export-table reference. *)
     Definition SealedDataCapsOnlyFromImportTables (mem: FullMemory) (compartment: Compartment) : Prop :=
      forall cap,
        ReachableCap mem (capsOfCompartment compartment) cap ->
        isSealedDataCap cap = true ->
        In (ImportEntry_SealedCapToExportEntry cap) compartment.(compartmentImports).
 
-    (* A capability is in a library of its addresses belong to a library *)
+    (** The capability's addresses all lie within some library's footprint. *)
+    (* A capability is in a library if its addresses belong to a library *)
     Definition InLibraryFootprint (config: Config) (cap: Cap) :=
       exists library, In library config.(configCompartments) /\
                       isLibrary library = true /\
                         Subset cap.(capAddrs) (compartmentFootprint library).
 
+    (** The capability's addresses all lie within some compartment's export table. *)
     Definition InExportTableFootprint (config: Config) (cap: Cap) :=
       exists compartment, In compartment config.(configCompartments) /\
                           Subset cap.(capAddrs) (exportTableFootprint compartment).
 
+    (** Permissions a code capability may carry: execute, system, load and load-capability at
+        most, and never the right to store local capabilities. *)
     Definition ValidPCCPerms cap :=
       Subset cap.(capPerms) [Perm.Exec;Perm.System;Perm.Load;Perm.Cap] (* No store, sealing, unsealing *) 
       /\ ~(In Local cap.(capCanStore)). (* No SL *)
 
+    (** Permissions a globals capability may carry: those of a code capability plus store;
+        still no store-local, and no sealing or unsealing. *)
     Definition ValidCGPPerms cap :=
       Subset cap.(capPerms) [Perm.Exec;Perm.System;Perm.Load;Perm.Store;Perm.Cap] (* No sealing, unsealing *) 
       /\ ~(In Local cap.(capCanStore)). (* No SL *)
 
+    (** An import entry is what it claims to be: a library import is a forward sentry into a
+        library's footprint with code-capability permissions; a compartment import is sealed
+        with the switcher's key, cannot store, and points into an export table. *)
     Definition WFImportEntry (config: Config) (importEntry: ImportEntry) :=
         (* All sentries to library functions are indeed sentries to library functions. *)
         (forall cap, importEntry = ImportEntry_SentryToLibraryFunction cap ->
@@ -203,16 +282,24 @@ Module Configuration.
                      InLibraryFootprint config cap /\
                      ValidPCCPerms cap  
         ) /\
-        (* All sealed caps to export entries are sealed with the switcher key and point to an export table.*)
+        (* All sealed caps to export entries are sealed with the switcher key and point to an export table. *)
         (forall cap, importEntry = ImportEntry_SealedCapToExportEntry cap ->
                      cap.(capSealed) = Some (inr config.(configSwitcher).(Switcher_key)) /\
                      ~(In Perm.Store cap.(capPerms)) /\
                      InExportTableFootprint config cap
         ).
 
+    (** A sealing capability carries no permission beyond sealing and unsealing. *)
     Definition ValidSealingCap (c: Cap) :=
       Subset c.(capPerms) [Perm.Sealing;Perm.Unsealing].
     
+    (** A well-formed compartment.  The addresses it can read, write or execute lie within its
+        footprint, and its reach is derivable from its initial capabilities without loading; its
+        PCC and CGP are unsealed with the permitted permissions; every sentry or sealed reference
+        it can reach was declared in its import table, and every import entry is well formed;
+        its sealing capabilities are proper and none of them can seal with the switcher's key.
+        The reachability clauses are judged in the initial memory; the others constrain the
+        capabilities themselves. *)
     Record WFCompartment (config: Config) (c: Compartment) :=
       {
         (* All RWX addresses reachable by a compartment belong to the compartment's footprint. *)
@@ -241,15 +328,26 @@ Module Configuration.
                                                  c.(compartmentSealingCaps)
       }.                                                                       
 
+    (** What is required of the switcher's own compartment: nothing yet; its behavior is
+        constrained by [SwitcherProperty] instead. *)
     Definition WFSwitcher (c: Compartment) : Prop := True.
+
+    (** The index of the switcher's compartment. *)
     Definition switcherIdx config := (config.(configSwitcher).(Switcher_compartmentIdx)).
     
+    (** The regions that must not overlap: every compartment's footprint, every thread's
+        initial stack and every export table, in that order (the order is relied on by
+        [threadInConfigFootprint] and [compartmentInConfigFootprint]). *)
     Definition ConfigFootprints (config: Config) :=
         (* (configMMIOAddrs config) :: *)
           (map compartmentFootprint config.(configCompartments))
             ++ (map stackFootprint config.(configThreads))
             ++ (map exportTableFootprint config.(configCompartments)).
 
+    (** A well-formed configuration: the regions above are pairwise disjoint, every
+        compartment is well formed, the switcher's index names a compartment, and only the
+        switcher's compartment lists, among its sealing capabilities, one that can unseal with
+        the switcher's key.  This is the first hypothesis of [ThreadIsolatedMonotonicity]. *)
     Record WFConfig (config: Config) := {
         (* Compartments, stack, and export table occupy disjoint memory regions. *)
         WFConfig_footprintDisjoint: Separated (ConfigFootprints config);
@@ -263,15 +361,22 @@ Module Configuration.
                                                 id = switcherIdx config
     }.
 
+    (** The per-thread invariant maintained across every step: the register file has the
+        architected number of registers ([ValidRf]).  Indexed by the thread's metadata, which
+        it does not yet use. *)
     Record ThreadInv (meta: InitialThreadMetadata) (t: Thread) : Prop :=
     { Inv_validRf : ValidRf t.(thread_userState).(thread_rf)
     }.
 
+    (** Who an address initially belongs to: a thread's stack, a compartment, or a library. *)
     Inductive AddressProvenance :=
     | Provenance_Stack (tid: nat)
     | Provenance_Compartment (cid: nat)
     | Provenance_Library (lid: nat).                                 
      
+    (** The provenance relation over the configuration's footprints.  Libraries are
+        compartments without a CGP, so they fall under [CompartmentCodeProvenance] and no rule
+        produces [Provenance_Library]. *)
     Inductive AddrHasProvenance : Config -> Addr -> AddressProvenance -> Prop :=
     | StackProvenance : forall config addr tid metaThread,
         nth_error config.(configThreads) tid = Some metaThread ->
@@ -282,6 +387,8 @@ Module Configuration.
         In addr (compartmentFootprint compartment) ->
         AddrHasProvenance config addr (Provenance_Compartment cid).
 
+    (** Two memories agree at an address: same byte, and same tag on the capability-sized
+        granule containing it. *)
     (* Memory is equivalent at an addr if the byte is the same and
     the tag corresponding to the address is the same. *)
 
@@ -289,6 +396,7 @@ Module Configuration.
       readByte mem1 addr = readByte mem2 addr /\
         (readTag mem1 (toCapAddr addr) = readTag mem2 (toCapAddr addr)).
 
+    (** Two memories agree on everything in thread [tid]'s stack. *)
     (* Thread-local memory is equivalent if addresses in the
        thread's stack are equivalent. *)
     Definition MemEquivalentAtThread (config: Config) (tid: nat) (mem1 mem2: FullMemory) : Prop :=
@@ -296,49 +404,71 @@ Module Configuration.
                    MemEquivalentAtAddr mem1 mem2 addr.
     Abbreviation ThreadState := (UserContext * SystemContext)%type.
 
+    (** The PCC carries the system permission: the thread is in the switcher or on an
+        exception path. *)
     Definition InSystemMode (st: ThreadState) : Prop :=
       In Perm.System (Spec.pcc st).(capPerms).
+
+    (** The same test on a [Thread]. *)
     Definition ThreadInSystemMode (t: Thread) :=
       In Perm.System t.(thread_userState).(thread_pcc).(capPerms).
 
+    (** The switcher compartment's footprint (its code and, if it has one, its globals) reads
+        as in the initial memory. *)
     Definition SwitcherCodeUnchanged (config: Config) (mem: FullMemory) : Prop :=
       forall addr, AddrInCompartment config
                      config.(configSwitcher).(Switcher_compartmentIdx) addr ->
                    MemEquivalentAtAddr config.(configInitMemory) mem addr.
 
+    (** Every compartment's code region (its PCC's addresses) reads as in the initial
+        memory. *)
     Definition ReadOnlyMemUnchanged (config: Config) (mem: FullMemory) : Prop :=
       forall addr compartment,
         In compartment config.(configCompartments) ->
         In addr compartment.(compartmentPCC).(capAddrs) ->
         MemEquivalentAtAddr config.(configInitMemory) mem addr.
 
+    (** Two memories agree everywhere outside thread [tid]'s stack. *)
     Definition NonStackMemPreserved (config: Config) (tid: nat) (mem1 mem2: FullMemory): Prop :=
       forall addr, ~(AddrInStack config tid addr) ->
                    MemEquivalentAtAddr mem1 mem2 addr.
 
+    (** Every export table reads as in the initial memory. *)
     Definition ExportTablesUnchanged (config: Config) (mem: FullMemory) : Prop :=
       forall addr compartment,
         In compartment config.(configCompartments) ->
         In addr compartment.(compartmentExportTableAddrs) ->
         MemEquivalentAtAddr config.(configInitMemory) mem addr.
 
+    (** The memory invariants a well-formed system should keep: read-only code and export
+        tables unchanged.  Not yet part of [GlobalInvariant]; see the TODO there. *)
     Record GlobalMemInvariants (config: Config) (mem: FullMemory) : Prop :=
       { Inv_ReadOnlyMem: ReadOnlyMemUnchanged config mem
       ; Inv_ExportTableMem: ExportTablesUnchanged config mem
       }.
 
+    (** The global inductive invariant, proved preserved by every step
+        ([GlobalInvariantStep]): the current thread index is in range, and the threads are in
+        one-to-one correspondence with the configuration's thread metadata, each satisfying
+        [ThreadInv].  The memory invariants are stated ([GlobalMemInvariants]) but not yet
+        included or proved. *)
     Record GlobalInvariant (config: Config) (m: Machine) : Prop :=
     { Inv_curThread: m.(machine_curThreadId) < length m.(machine_threads)
     ; Inv_threads : Forall2 ThreadInv config.(configThreads) m.(machine_threads)
     (* ; Inv_mem: GlobalMemInvariants config m.(machine_memory) *) (* TODO: prove these *)
     }.
 
+    (** The export-table lookup the switcher relies on, taken as a parameter: from a
+        capability, the compartment index and entry index it denotes, if any. *)
     (* Based on the initial configuration, we can statically determine
        whether a capability corresponds to a compartment's export table
        entry and if so, which compartment and which entry.
-       TOOD: add a well-formedness condition as below.
+       TODO: add a well-formedness condition as below.
      *)
     Context (LookupExportTableCompartmentId: Config -> Cap -> option (nat * nat)).
+
+    (** The condition the lookup is meant to satisfy: the capability's addresses lie in that
+        compartment's export table and the entry exists. *)
     Definition WFLookupExportTableCompartmentId :=
       forall config cap cid eid,
         LookupExportTableCompartmentId config cap = Some (cid,eid) ->
@@ -347,6 +477,7 @@ Module Configuration.
           Subset cap.(capAddrs) compartment.(compartmentExportTableAddrs) /\
           nth_error compartment.(compartmentExports) eid = Some entry.  
 
+    (** The compartment the lookup names, if any. *)
     Definition LookupExportTableCompartment (config: Config) (cap: Cap) :=
       match LookupExportTableCompartmentId config cap with
       | Some (cid, _) =>
@@ -354,6 +485,7 @@ Module Configuration.
       | None => None
       end.
 
+    (** The compartment and the export entry the lookup names, if both exist. *)
     Definition LookupExportTableCompartmentAndEntry (config: Config) (cap: Cap) :=
      match LookupExportTableCompartmentId config cap with
      | Some (cid, eid) =>
@@ -368,6 +500,9 @@ Module Configuration.
      | None => None
      end.
 
+    (** The shape of a stack capability: unsealed; load, store and capability permissions; may
+        store local and non-local capabilities; is itself local, so it can be stored only
+        where local capabilities may be; no sealing keys. *)
     Definition mkCSP' (addrs: list Addr) (cursor: Addr) : Cap :=
       {| capSealed := None;
          capPerms := [Perm.Load;Perm.Store;Perm.Cap];
@@ -382,14 +517,20 @@ Module Configuration.
          capCursor := cursor 
       |}. 
 
+    (** A stack capability over [len] bytes from the given base address, with the given
+        cursor. *)
     Definition mkCSP (base: Addr) (len: nat) (cursor: Addr) : Cap :=
       mkCSP' (seq base len) cursor.
 
+    (** A capability of exactly the [mkCSP] shape, with its cursor within its bounds. *)
     Definition ValidCSP (csp: Cap) :=
       exists base len addr,
       In addr (seq base len) /\
       csp = mkCSP base len addr.
 
+    (** A trusted-stack frame of thread [meta] recording a call into compartment [cid]: its
+        callee capability is looked up as an export entry of [cid], and its saved stack
+        capability is a valid CSP obtained from the thread's initial one by restriction. *)
     Record ValidTrustedStackFrame
       (config: Config)
       (frame: TrustedStackFrame) (meta: InitialThreadMetadata)
@@ -403,6 +544,9 @@ Module Configuration.
           ValidCSP frame.(trustedStackFrame_CSP) /\
           Restrict meta.(initThreadCSP) frame.(trustedStackFrame_CSP)
       }.
+
+    (** Every frame on a trusted stack holds a valid CSP and names a callee that is a
+        compartment proper (one with a CGP) with an existing export entry. *)
     Definition ValidTrustedStack (config: Config) (trustedStack: TrustedStack) : Prop :=
      (forall frame, In frame trustedStack.(trustedStack_frames) ->
                ValidCSP frame.(trustedStackFrame_CSP) /\
@@ -411,6 +555,11 @@ Module Configuration.
                    compartment.(compartmentCGP) <> None)).
      
 
+    (** A thread's initial state, against its metadata: everything reachable from its user
+        state (PCC and registers) is reachable from its initial CSP and its starting
+        compartment's capabilities; its trusted stack holds exactly one frame, for that
+        compartment; its stack holds no tagged capability; and its CSP is a valid stack
+        capability.  The stack condition is marked in the source as needing revision. *)
     Record ValidInitialThread (config: Config) (meta: InitialThreadMetadata) (t: Thread) : Prop :=
       { ValidInitialThread_caps:
         (* Initially, a thread can only access the caps corresponding to its initial compartment along with the CSP *)
@@ -433,6 +582,8 @@ Module Configuration.
       ; ValidInitialCSP: ValidCSP meta.(initThreadCSP)
       }.
 
+    (** The shape of a code capability for the switcher's entry points: unsealed; execute,
+        system, load and load-capability permissions; may store only non-local capabilities. *)
     Definition mkUnsealedPCC (addrs: list Addr) (cursor: Addr) := 
       {| capSealed := None;
          capPerms := [Perm.Exec;Perm.System;Perm.Load;Perm.Cap];
@@ -447,27 +598,40 @@ Module Configuration.
          capCursor := cursor; 
       |}.
 
+    (** The addresses of the switcher's code capability. *)
     Definition switcherFootprint (config: Config) :=
       match nth_error config.(configCompartments) config.(configSwitcher).(Switcher_compartmentIdx) with
       | Some compartment => compartment.(compartmentPCC).(capAddrs)
       | None => []                                             
       end.
 
+    (** The machine trap code capability every user-mode thread must hold: the switcher's code
+        region with the exception entry as cursor. *)
     Definition MTCC (config: Config) : Cap :=
       mkUnsealedPCC (switcherFootprint config) config.(configSwitcher).(Switcher_AddrOf_exception_entry_asm). 
 
+    (** A thread's MTCC is the configuration's [MTCC]. *)
     (* MTCC initially points to the switcher's exception entry path *)
     Record UserModeOk (config: Config) (t: Thread ) : Prop :=
       { MTCC_ok: t.(thread_systemState).(thread_mtcc) = (MTCC config)}.
 
+    (** The thread's PCC carries the system permission; the same test as
+        [ThreadInSystemMode]. *)
     Definition ThreadHasSystemPerm (t: Thread) : Prop :=
       In Perm.System t.(thread_userState).(thread_pcc).(capPerms).
 
+    (** Every thread not in system mode holds the configuration's MTCC, so that an exception
+        enters the switcher. *)
     Definition UserModeInvariant (config: Config) (m: Machine) : Prop :=
       forall thread, In thread m.(machine_threads) ->
                      (~ ThreadHasSystemPerm thread) ->
                      UserModeOk config thread.
                     
+    (** A valid initial machine for the configuration: its memory is the initial memory, its
+        threads correspond one to one to the thread metadata and each is a valid initial
+        thread, the global invariant already holds, and every user-mode thread traps into the
+        switcher.  With thread isolation added, this is [ValidInitialMachine], the second
+        hypothesis of [ThreadIsolatedMonotonicity]. *)
     Record ValidInitialState (config: Config) (m: Machine) : Prop :=
       { ValidInit_memory: m.(machine_memory) = config.(configInitMemory)
       ; ValidInit_threads: Forall2 (ValidInitialThread config) config.(configThreads) m.(machine_threads) 
@@ -475,12 +639,15 @@ Module Configuration.
       ; ValidInit_userMode: UserModeInvariant config m
       }.
 
+    (** Projections of the invariants, for [eauto with invariants]. *)
     Hint Resolve Inv_curThread : invariants.
     Hint Resolve Inv_validRf: invariants.
 
+    (** A memory with every tag cleared. *)
     Definition dummy_memory (mem: Memory_t) : FullMemory :=
       (mem, fun _ => false).
 
+    (** Where a thread's stack sits in [ConfigFootprints]: after the compartment footprints. *)
     Lemma threadInConfigFootprint:
       forall config metaThread tid addr,
         nth_error (configThreads config) tid = Some metaThread ->
@@ -499,6 +666,7 @@ Module Configuration.
       rewrite hthread. auto.
     Qed.
 
+    (** Where a compartment's footprint sits in [ConfigFootprints]: at its own index. *)
     Lemma compartmentInConfigFootprint:
       forall config compartment cid addr,
         nth_error (configCompartments config) cid = Some compartment ->
@@ -513,13 +681,19 @@ Module Configuration.
       exfalso. apply H. apply nth_error_Some. rewrite_solve.
     Qed.
 
+    (** Consequences of well-formedness, and the preservation of [GlobalInvariant]. *)
     Section Proofs.
 
+      (** The address lies in the switcher's compartment. *)
       Definition AddrInSwitcherFootprint (config: Config) (addr: Addr) :=
         AddrInCompartment config (switcherIdx config) addr.
+
+      (** Every address of the list lies in the switcher's compartment. *)
       Definition AddrsInSwitcherFootprint (config: Config) (addr: list Addr) :=
         forall a, In a addr -> AddrInCompartment config (switcherIdx config) a.
 
+      (** Turns footprint-membership hypotheses into positions in [ConfigFootprints], where
+          [Separated] applies. *)
       Ltac saturate_footprints := 
         repeat match goal with
           | H: nth_error (configThreads _) _ = Some ?thread,
@@ -533,6 +707,8 @@ Module Configuration.
           end.     
 
 
+      (** In a well-formed configuration an address has at most one provenance, because the
+          footprints are separated. *)
       (* TODO: add MMIO and shared objects *)
       Lemma uniqueInitialProvenance:
         forall config addr prov1 prov2,
@@ -553,6 +729,7 @@ Module Configuration.
         all: destruct_products; simplify_Separated; saturate_list; try lia.
       Qed.
 
+      (** A valid initial state satisfies the global invariant: it carries it as a field. *)
       Lemma InvariantInitial :
         forall config m,
           ValidInitialState config m ->
@@ -564,6 +741,8 @@ Module Configuration.
         - apply ValidInit_invariant. auto.
       Qed.
 
+      (** Every thread of a machine satisfying the global invariant has a well-formed register
+          file. *)
       Lemma GlobalInvariantImpliesValidRf:
         forall config m id thread,
           GlobalInvariant config m ->
@@ -580,6 +759,9 @@ Module Configuration.
           apply Some_not_None in hthread. apply nth_error_Some in hthread. lia.
       Qed.
 
+      (** A thread step preserves [ThreadInv]: a general instruction or a compartment call keeps
+          the register file well formed ([generalInstOkCommon], [callSentryOkCommon]); an
+          exception, a return or a failed fetch leaves it unchanged. *)
       Lemma ThreadStep_ThreadInv:
         forall x thread mem istatus userSt' mem' sysSt' istatus' ev,
         ThreadInv x thread ->
@@ -603,6 +785,8 @@ Module Configuration.
         - constructor; cbn. apply hinv.
       Qed.
 
+      (** A step of the current thread preserves [ThreadInv] for every thread: the stepping
+          thread by [ThreadStep_ThreadInv], the idle threads because they are unchanged. *)
       Lemma SameThreadStep_ThreadInv:
         forall config m1 m2 ev,
           machine_curThreadId m1 < length (machine_threads m1) ->
@@ -627,6 +811,7 @@ Module Configuration.
           + rewrite idleThreadsEq with (1 := n) in *. option_simpl. auto.
       Qed.
 
+      (** A step of the current thread preserves the global invariant. *)
       Lemma SameThreadStepOk :
         forall config s s' ev,
         GlobalInvariant config s ->
@@ -640,6 +825,9 @@ Module Configuration.
         - eapply SameThreadStep_ThreadInv; eauto.
       Qed.
 
+      (** Every machine step preserves the global invariant: a thread switch changes only the
+          current thread index, kept in range by its side condition, and a same-thread step is
+          [SameThreadStepOk]. *)
       (* Machine step preserves the inductive invariant. *)
       Lemma GlobalInvariantStep :
         forall config s tr s' tr',
@@ -2318,10 +2506,38 @@ End CompartmentIsolationValidation.
 (* From any valid initial state where threads are isolated (their reachable
    read/write caps are disjoint), for any sequence of same-domain (Ev_General)
    steps, the reachable caps in each thread do not increase. *)
+
+(** * Thread-isolated monotonicity
+
+    The main proved result of this development.  For a well-formed configuration and an initial
+    machine whose threads can read or write only pairwise-disjoint sets of addresses, every
+    same-domain execution keeps each thread's reachable capabilities within the set reachable
+    from its initial state.  Thread isolation is the hypothesis on the initial machine; the
+    proof maintains it along the way, as part of its invariant, but the theorem does not
+    state it as a conclusion.
+
+    "Same-domain" is the restriction that lets the theorem hold without any assumption about
+    the switcher's contracts: the trace may contain thread switches and general instructions
+    (any instruction other than a compartment call, a compartment return or an exception,
+    whether or not the thread holds the system permission), and none of those three events.
+    After the first such event the property below holds vacuously
+    ([PThreadIsolatedMonotonicity] is an implication from [SameDomainTrace]), so nothing is
+    claimed about those events or about what follows them; the switcher's contracts are
+    specified in [SwitcherProperty] and are not proved here.
+
+    The proof is an inductive invariant over [MachineStep], assembled with
+    [Combinators.always] (in Utils.v): [InvariantInitial] establishes it, [InvariantStep]
+    preserves it and [InvariantUse] draws the property from it.  Per-instruction
+    monotonicity is not proved here either: it is a hypothesis carried by every general
+    instruction ([WfGeneralInst] in [Spec]), and the theorem lifts it to whole executions. *)
 Module ThreadIsolatedMonotonicity.
   Import ListNotations.
   Import Configuration.
   Import Separation.
+
+  (** The instruction-set and machine parameters the module is generic over.  Nothing below
+      depends on a particular capability encoding, fetch function or decoder: the theorem
+      holds for every instantiation of these parameters. *)
   Section WithContext. 
     Context [ISA: ISA_params].
     Context {machineTypeParams: MachineTypeParams}.
@@ -2329,6 +2545,8 @@ Module ThreadIsolatedMonotonicity.
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
     Context {pccNotInBounds : EXNInfo}.
+
+    (** Local abbreviations: the step relations instantiated with this section's parameters. *)
     Abbreviation AddrOffset := nat (only parsing).
     Abbreviation MachineStep := (MachineStep fetchAddrs decode pccNotInBounds).
     Abbreviation PCC := Cap (only parsing).
@@ -2338,53 +2556,98 @@ Module ThreadIsolatedMonotonicity.
     Abbreviation ValidInitialState := (@ValidInitialState _ _ _ LookupExportTableCompartmentId).
     Abbreviation ValidInitialThread := (@ValidInitialThread _ _ _ LookupExportTableCompartmentId). 
 
+    (** The events a same-domain trace may contain: a thread switch, or a step on which the
+        current thread completed a general instruction without raising an exception (every
+        other branch of [threadStepFunction] produces a different event).  Compartment calls
+        ([Ev_Call]), returns ([Ev_Ret]) and exceptions ([Ev_Exception]) are the switcher's
+        events and are excluded: they are exactly what the theorem does not cover. *)
     Definition SameDomainEvent (ev: Event) : Prop :=
       match ev with
       | Ev_SwitchThreads _ => True
       | Ev_SameThread _ Ev_General => True
       | _ => False
       end.
+
+    (** A trace is same-domain when every event in it is. *)
     Definition SameDomainTrace (tr: Trace) : Prop :=
       Forall SameDomainEvent tr.
 
+    (** Thread [t_cur], running in memory [m_cur], can reach no capability that [t_init] could
+        not already reach in memory [m_init]: [ReachableCapSubset] ([SpecLemmas]) over the
+        capabilities a thread holds ([capsOfThread]: PCC, register file, MEPCC, MTCC and the
+        trusted-stack frames).  This is the per-thread form of monotonicity. *)
     Definition ThreadReachableCapSubset (m_init m_cur: FullMemory) (t_init t_cur: Thread) : Prop :=
       ReachableCapSubset m_init m_cur (capsOfThread t_init) (capsOfThread t_cur).
 
+    (** Pairwise, no address is reachable with read or write permission from the capabilities
+        of two different threads ([RWAddressesDisjoint], in the machine's current memory).
+        This is the isolation half of the invariant: it is what keeps one thread's stores from
+        changing what another thread can reach. *)
     (* Threads only have read/write access to disjoint addresses. *)
     Definition IsolatedThreads (machine: Machine) : Prop :=
       Pairwise (RWAddressesDisjoint machine.(machine_memory))
                (map capsOfThread machine.(machine_threads)).
 
+    (** The hypothesis on the initial machine: it is a valid initial state of the configuration
+        ([ValidInitialState], from [Configuration]) and its threads are isolated from the
+        start.  Isolation is assumed here and maintained by the proof's invariant along
+        same-domain traces, but it is not part of the theorem's conclusion. *)
     Definition ValidInitialMachine (config: Config) (st: Machine) : Prop :=
       ValidInitialState config st /\
       IsolatedThreads st.
 
+    (** Fix a configuration and an initial machine satisfying the hypothesis; everything in
+        this section is relative to that initial machine. *)
     Section WithConfig.
       Variable config: Config.
       Variable initialMachine: Machine.
       Variable pfValidInitialMachine: ValidInitialMachine config initialMachine.
 
+      (** Thread by thread ([Forall2] pairs the initial thread list with the current one), the
+          current thread reaches no capability its initial state could not reach:
+          [ThreadReachableCapSubset] between the initial memory and the current memory.  This
+          is the monotonicity half of the invariant. *)
       Definition IsolatedMonotonicity (machine: Machine) :=
         Forall2 (ThreadReachableCapSubset initialMachine.(machine_memory) machine.(machine_memory))
                 initialMachine.(machine_threads) machine.(machine_threads).
 
+      (** The property the theorem establishes of every reachable state [(machine, tr)]: if
+          the trace so far is same-domain, then [IsolatedMonotonicity] holds of the machine.
+          The implication is where the scope of the result lives: on a trace containing a
+          call, a return or an exception the premise fails and the property says nothing. *)
       (* A thread's caps are a subset of caps reachable from initial state. *)
       Definition PThreadIsolatedMonotonicity (st: State) : Prop :=
         let '(machine, tr) := st in
         SameDomainTrace tr ->
         IsolatedMonotonicity machine.
 
+      (** The two conjuncts maintained along same-domain traces: isolation and monotonicity.
+          Isolation is needed to prove monotonicity (a step of the current thread must not
+          enlarge what an idle thread can reach), which is why the invariant is stronger than
+          the property. *)
       Record Invariant' machine : Prop :=
         {
           Inv_Isolation: IsolatedThreads machine;
           Inv_Monotonicity: IsolatedMonotonicity machine
         }.
+
+      (** The inductive invariant.  [GlobalInvariant] (the current thread index is in range
+          and every thread has a well-formed register file) holds in every reachable state,
+          and [Invariant'] holds whenever the trace so far is same-domain.  A trace only
+          grows, so once it has left the same-domain fragment the second conjunct is vacuous
+          for the rest of the execution. *)
       Definition Invariant (st: State) :=
         GlobalInvariant config (fst st) /\
         (SameDomainTrace (snd st) -> Invariant' (fst st)).
+
+      (** The two projections of [Invariant'], for [eauto with invariants]. *)
       Hint Resolve Inv_Monotonicity : invariants.
       Hint Resolve Inv_Isolation: invariants.
 
+      (** Establish: the invariant holds of the initial machine with the empty trace.
+          [GlobalInvariant] follows from validity of the initial state
+          ([Configuration.InvariantInitial]); isolation is the hypothesis itself; and
+          monotonicity is reflexive, each thread against its own initial state. *)
       Lemma InvariantInitial  :
         Invariant (initialMachine, []).
       Proof.
@@ -2397,6 +2660,10 @@ Module ThreadIsolatedMonotonicity.
           + cbv [SameDomainTrace ThreadReachableCapSubset ReachableCapSubset ValidInitialMachine IsolatedMonotonicity].
             apply Forall2_refl. auto.
       Qed.
+
+      (** A machine satisfying [GlobalInvariant] has as many threads as the initial machine:
+          the invariant pairs the machine's threads with the configuration's thread metadata, in
+          the initial and in the current state. *)
       Lemma GlobalInvariant_length:
         forall m,
           GlobalInvariant config m ->
@@ -2409,6 +2676,8 @@ Module ThreadIsolatedMonotonicity.
         apply Forall2_length in Inv_threads1. auto.
       Qed.
 
+      (** Discharges a [ValidRf] side condition on the current thread's register file from
+          [GlobalInvariant]. *)
       Ltac simplify_invariants :=
         repeat match goal with
           | H: GlobalInvariant _ ?m,
@@ -2417,6 +2686,7 @@ Module ThreadIsolatedMonotonicity.
               eapply GlobalInvariantImpliesValidRf with (1 := H) (2 := H1)
           end.
 
+      (** Reads the monotonicity conjunct of [Invariant'] for the thread at index [id]. *)
       Lemma InvariantImpliesThreadReachableCapSubset:
         forall m thread thread' id,
           Invariant' m ->
@@ -2426,6 +2696,9 @@ Module ThreadIsolatedMonotonicity.
       Proof.
         intros. eapply Forall2_nth_error2 with (1 := Inv_Monotonicity _ H); eauto.
       Qed.
+
+      (** From pairwise read/write disjointness, the one-directional form the separation lemmas
+          take: no address thread [i] can write is an address thread [j] can read. *)
       Lemma IsolatedImpliesWriteReadDisjoint:
         forall m i j x y,
         IsolatedThreads m ->
@@ -2440,6 +2713,21 @@ Module ThreadIsolatedMonotonicity.
         eapply hisolated; eauto; by (apply map_nth_error).
       Qed.
 
+      (** The step case for a general instruction executed by the current thread, the only
+          same-domain event that changes memory or a thread (a thread switch is handled
+          directly in [InvariantStep]): [Invariant'] is preserved.
+
+          The proof forces the step to the successful branch of a general instruction and
+          applies [generalInstOkCommon] ([SpecLemmas]), which extracts from the instruction's
+          well-formedness ([WfGeneralInst]) the two facts everything else rests on: the memory
+          update is authorized by capabilities the thread reaches ([ValidMemUpdate]), and the
+          thread's new capabilities were reachable from its old ones ([ReachableCaps]).
+          Isolation is then preserved by the separation lemmas, [RWAddressDisjointUpdate] for
+          the pairs involving the stepping thread and [RWAddressDisjointUpdateUnchanged] for
+          pairs of idle threads.  Monotonicity is preserved by [ReachableCapSubset_ValidUpdate]
+          for the stepping thread, and by [ReachableCapSubsetUpdateDisjointUnchanged] for every
+          idle thread, whose reach cannot grow because the stepping thread cannot write any
+          address the idle thread reads ([IsolatedImpliesWriteReadDisjoint]). *)
       Lemma SameDomainStepOk:
         forall m m' ev,
           GlobalInvariant config m ->
@@ -2517,6 +2805,11 @@ Module ThreadIsolatedMonotonicity.
         }
       Qed.
 
+      (** Preserve: every [MachineStep] keeps the invariant.  [GlobalInvariant] is preserved by
+          [GlobalInvariantStep] for any step.  For the second conjunct, if the new trace is
+          same-domain then so was the old one and the new event is one of the two admitted
+          kinds: a thread switch changes only the current thread index, so [Invariant']
+          carries over unchanged; a general instruction is [SameDomainStepOk]. *)
       Lemma InvariantStep (s: State) :
         forall t,
         Invariant s ->
@@ -2538,6 +2831,8 @@ Module ThreadIsolatedMonotonicity.
         - eapply SameDomainStepOk with (m := m); eauto.
       Qed.
 
+      (** Use: the invariant implies the property.  On a same-domain trace the monotonicity
+          conjunct of [Invariant'] is [IsolatedMonotonicity]. *)
       Lemma InvariantUse (s: State) :
         Invariant s ->
         PThreadIsolatedMonotonicity s.
@@ -2548,6 +2843,23 @@ Module ThreadIsolatedMonotonicity.
       Qed.
     End WithConfig.
 
+    (** ** The theorem
+
+        For every well-formed configuration [config] and every [initial_machine] that is a
+        valid initial state of [config] with isolated threads: in every state reachable from
+        [(initial_machine, [])] by [MachineStep] whose trace is same-domain, each thread can
+        reach only capabilities that were reachable from its initial state
+        ([PThreadIsolatedMonotonicity]).
+
+        [Combinators.always step P init] (in Utils.v) holds when some invariant is true initially,
+        is preserved by every step and implies [P]; the "every reachable state" reading follows
+        by induction on steps.  The witness is [Invariant] with the three lemmas above.
+
+        Not covered: compartment calls, compartment returns and exceptions, and every state
+        after the first of them; the switcher ([SwitcherProperty]); any concrete instruction
+        set, since per-instruction monotonicity is the hypothesis [WfGeneralInst] on each
+        instruction and not a result; and the satisfiability of [WFConfig] and
+        [ValidInitialMachine] by a real configuration, which this development does not show. *)
     (* For any well-formed configuration `config` and initial_machine
        configured with `config` such that the reachable addresses with
        read/write permissions in each thread are isolated, after any

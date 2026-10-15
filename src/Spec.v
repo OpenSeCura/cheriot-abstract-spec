@@ -42,12 +42,36 @@ Class MachineTypeParams := {
     Key : Type
 }.
 
+(** * The abstract machine
+
+    Everything from here to the end of the section is parametric in the instruction-set
+    parameters [ISA_params] (the capability size and the register count), the machine type
+    parameters [MachineTypeParams] (the types of bytes and of sealing keys) and, from
+    [CapEncodeDecode] on, the encoding of capabilities as bytes.  The section defines, in order,
+    addresses and capabilities, memory with its tags, the operations on capabilities and the
+    reachability relations over a memory, the machine state, the well-formedness conditions on
+    instructions, and the step relation over machines and traces.  The CHERIoT ISA is the design
+    modeled; where a definition encodes one of its mechanisms, the comment says which. *)
 Section Machine.
+
+  (** Both parameter classes are section context: the definitions below that use them take them
+      as implicit arguments. *)
   Context [ISA: ISA_params].
   Context {machineTypeParams: MachineTypeParams}.
+
+  (** A memory address.  Addresses are natural numbers with no upper bound; the model fixes no
+      word size. *)
   Definition Addr := nat.
+
+  (** The index of a capability slot: an address with its low [ISA_LG_CAPSIZE_BYTES] bits
+      dropped, so that one slot holds one capability of [ISA_CAPSIZE_BYTES] bytes.  Tags are kept
+      per slot. *)
   Definition CapAddr := nat.
+
+  (** The slot an address falls in. *)
   Definition toCapAddr (a: Addr): CapAddr := Nat.shiftr a ISA_LG_CAPSIZE_BYTES.
+
+  (** The first address of a slot. *)
   Definition fromCapAddr (a: CapAddr): Addr := Nat.shiftl a ISA_LG_CAPSIZE_BYTES.
 
   (* A cap X can be stored in a cap Y only if X can be stored in a Label that Y provides *)
@@ -57,12 +81,29 @@ Section Machine.
    So to prevent the pointer to the callee's stack from getting stored, the cap supplied by the caller should be !SL
    eventhough the underlying pointer is really in the stack.
    *)
+
+  (** The two store labels.  A capability carries the labels it may store ([capCanStore]) and the
+      labels under which it may itself be stored ([capCanBeStored]); among its other conditions,
+      [ValidMemCapUpdate] admits a stored capability only where a label of the authorizing
+      capability's [capCanStore] is among the stored capability's [capCanBeStored].  In CHERIoT,
+      [Local] is the label of a capability without the global bit, which may be stored only
+      through a capability with the store-local permission, and [NonLocal] is the label of a
+      global one, which may be stored wherever capabilities may be stored; in the model that is
+      a capability whose [capCanStore] contains the stored one's label. *)
   Inductive Label :=
   | Local
   | NonLocal.
   Scheme Equality for Label.
 
   (* Represents Call and Return sentries *)
+
+  (** The sentry kinds of the CHERIoT ISA.  A sentry is a sealed code capability: it can be
+      jumped to, and its holder can neither unseal it nor use it as a data capability; the only
+      change the reachability relation admits to a sealed capability is a narrowing of where it
+      may be stored ([RestrictSealed]).  A forward sentry is the target of a call and fixes what
+      the call does to the interrupt status: enable, disable, or inherit it ([WfCallSentryInst]).
+      A backward sentry is the target of a return and enables or disables interrupts
+      ([WfRetSentryInst]). *)
   Inductive Sentry :=
   | CallEnableInterrupt
   | CallDisableInterrupt
@@ -70,8 +111,24 @@ Section Machine.
   | RetEnableInterrupt
   | RetDisableInterrupt.
 
+  (** What a sealed capability is sealed with: a sentry kind, for code capabilities, or a key,
+      for sealed data capabilities.  Keys are a [MachineTypeParams] parameter. *)
   Definition SealT := (Sentry + Key)%type. (* A sealed cap is either a sentry or a data cap sealed with a key *)
 
+  (** The abstract capability.  Besides its sealing state, permissions and store labels, it
+      carries explicitly what the CHERIoT encoding derives: the sealing and unsealing keys it
+      holds (as lists of keys rather than an object-type range), its bounds as a list of
+      addresses rather than a base and a length, and the permissions and labels that a capability
+      loaded through it keeps ([capKeepPerms], [capKeepCanStore], [capKeepCanBeStored], applied
+      by [attenuate]).  The last three model the ISA's load-side attenuation, by which a load
+      through a capability lacking the load-mutable permission strips the loaded capability's
+      store permissions, and one lacking the load-global permission strips its global bit.
+      Permissions and [capCanStore] are attenuated only when the loaded capability is unsealed;
+      a sealed one has only its [capCanBeStored] narrowed.
+
+      With bounds a list, any finite set of addresses is representable; the constraints the
+      encoding imposes are left to [CapEncodeDecode] and to the validation module at the end of
+      the file.  The cursor may lie outside the bounds, as the field's comment explains. *)
   Record Cap := {
       capSealed: option SealT;
       capPerms: list Perm.t;
@@ -95,12 +152,31 @@ Section Machine.
                          the error has to be handled by the caller compartment on return. *)
     }.
 
+  (** ** Memory
+
+      Memory as a total function from addresses to bytes. *)
   Definition Memory_t := Addr -> Byte.
+
+  (** The tags, one per capability slot, meant to be set exactly when the slot holds a
+      capability.  The model does not enforce that reading: a byte write leaves the tag as it was
+      ([writeCapOrBytes]), and clearing a tag is a separate kind of update
+      ([ValidMemTagRemoval]). *)
   Definition Tag_t := CapAddr -> bool.
+
+  (** Memory and tags together; every operation that may read or write a capability takes both. *)
   Definition FullMemory := (Memory_t * Tag_t)%type.
+
+  (** A byte string. *)
   Definition Bytes := list Byte.
+
+  (** A value as read from memory: a capability, when the tag is set and a whole slot was read,
+      or raw bytes. *)
   Definition CapOrBytes := (Cap + Bytes)%type.
 
+  (** The encoding interface: a decoder from bytes to a capability, used only under a set tag and
+      a whole slot's bytes ([bytesToCap]); an encoder from a capability to bytes; and decidable
+      equality on capabilities and on read values, for the proofs.  No law relating the encoder
+      and the decoder is assumed here. *)
   Class CapEncodeDecode := {
     bytesToCapUnsafe: Bytes -> Cap;
     capToBytes: Cap -> Bytes;
@@ -109,51 +185,91 @@ Section Machine.
     CapOrBytes_eqb: CapOrBytes -> CapOrBytes -> bool;
     CapOrBytes_eq_dec: EqDecider CapOrBytes_eqb
   }.
+
+  (** The encoding is section context from here on. *)
   Context {capEncodeDecode: CapEncodeDecode}.
 
+  (** Decode under the tag: a capability only if the tag is set and exactly one slot's worth of
+      bytes was read; otherwise the bytes themselves. *)
   Definition bytesToCap (tag: bool) (bytes: Bytes): CapOrBytes :=
     if tag && (length bytes =? ISA_CAPSIZE_BYTES)
     then inl (bytesToCapUnsafe bytes)
     else inr bytes.
 
+  (** The [sz] bytes from address [a] upward. *)
   Definition readMemBytes (mem: Memory_t) (a: Addr) (sz: nat) : Bytes :=
     map mem (seq a sz).
 
+  (** Read capability slot [capa]: its tag and its bytes, through [bytesToCap]. *)
   Definition readMemTagCap (mem: Memory_t) (tags: Tag_t) (capa: CapAddr) : CapOrBytes :=
     bytesToCap (tags capa) (readMemBytes mem (fromCapAddr capa) ISA_CAPSIZE_BYTES).
 
+  (** Memory with one byte replaced. *)
   Definition writeMemByte (mem: Memory_t) (a: Addr) (byte: Byte) : Memory_t :=
     fun i => if i =? a
              then byte
              else mem i.
 
+  (** Memory with the bytes written consecutively from [a]. *)
   Definition writeMemBytes (mem: Memory_t) (a: Addr) (bytes: Bytes): Memory_t :=
     fst (fold_left (fun '(mem', a') byte => (writeMemByte mem' a' byte, S a')) bytes (mem, a)).
 
+  (** Tags with one slot's tag set to [t]. *)
   Definition writeTagTag (tags: Tag_t) (capa: CapAddr) (t: bool) : Tag_t := (fun i => if i =? capa
                                                                                       then t
                                                                                       else tags i).
 
+  (** Store a capability at slot [capa]: its encoding ([capToBytes]) written from the slot's
+      first address, and the slot's tag set.  Nothing in [CapEncodeDecode] fixes the encoding's
+      length to one slot; that the bytes stay within the slot is the encoding's business, not
+      this definition's. *)
   Definition writeMemTagCap (mem: Memory_t) (tags: Tag_t) (capa: CapAddr) (c: Cap) : FullMemory :=
     let a := fromCapAddr capa in
     (writeMemBytes mem a (capToBytes c), writeTagTag tags capa true).
 
+  (** The same operations on a [FullMemory], memory and tags together. *)
+
+  (** The byte at an address. *)
   Definition readByte (mem: FullMemory) := fst mem.
+
+  (** [readMemBytes] on the memory half. *)
   Definition readBytes (mem: FullMemory) := readMemBytes (fst mem).
+
+  (** A slot's tag. *)
   Definition readTag (mem: FullMemory) := snd mem.
+
+  (** A slot's capability, or its bytes when the tag is clear. *)
   Definition readCap (mem: FullMemory) := readMemTagCap (fst mem) (snd mem).
+
+  (** [writeMemByte] on the memory half; the result is the memory alone. *)
   Definition writeByte (mem: FullMemory) := writeMemByte (fst mem).
+
+  (** [writeMemBytes] on the memory half; the result is the memory alone. *)
   Definition writeBytes (mem: FullMemory) := writeMemBytes (fst mem).
+
+  (** [writeTagTag] on the tag half; the result is the tags alone. *)
   Definition writeTag (mem: FullMemory) := writeTagTag (snd mem).
+
+  (** [writeMemTagCap] on both halves. *)
   Definition writeCap (mem: FullMemory) := writeMemTagCap (fst mem) (snd mem).
+
+  (** Write a read value back at [a]: a capability is written from the first address of the slot
+      [a] falls in, with that slot's tag set; bytes go into memory with the tags left as they
+      are. *)
   Definition writeCapOrBytes (mem: FullMemory) (a: Addr) (v: CapOrBytes) : FullMemory :=
     match v with
     | inl cap => writeCap mem (toCapAddr a) cap
     | inr bytes => (writeBytes mem a bytes, snd mem)
     end.    
 
+  (** The payload an instruction returns when it raises an exception: bytes, not interpreted by
+      the model.  [EXNInfo], later in the section, is the same type under the name the thread
+      state uses. *)
   Definition ExnInfo := Bytes.
 
+  (** Operations on a single capability: changing its seal, cursor and bounds; the sentry,
+      sealed-data and sealed predicates; and the load-side attenuation that [capKeepPerms],
+      [capKeepCanStore] and [capKeepCanBeStored] prescribe. *)
   Section CapHelpers.
     Definition setCapSealed (c: Cap) (seal: option SealT) : Cap :=
       {| capSealed := seal;
@@ -688,6 +804,20 @@ Section Machine.
           FuncExn.
     End ExnInst.
 
+    (** ** Instructions, events and traces
+
+        An instruction as the decoder delivers it: one of four kinds, each carrying its semantics
+        as a function and a proof that the function is well formed.  A general instruction
+        ([Inst_General]) acts on the user and system contexts under [WfGeneralInst], which
+        includes the per-instruction monotonicity of reachable capabilities; a call ([Inst_Call])
+        jumps through the capability in register [srcReg], a forward sentry or, as
+        [WfCallSentryInst] stands (its own comment marks the question), an unsealed code
+        capability, leaving a backward sentry to the caller in the link register when [optLink]
+        names one; a return ([Inst_Ret]) jumps through the backward sentry in [srcReg] under
+        [WfRetSentryInst]; an exception instruction ([Inst_Exn]) traps, with the payload
+        [exnInst] computes when the fetch is permitted, under [WfExnInst].  Because the proof
+        travels with the instruction, whoever builds an [Inst] discharges its well-formedness:
+        nothing in this file proves it, and no concrete instruction set is given here. *)
     Inductive Inst :=
     | Inst_General generalInst (wf: WfGeneralInst generalInst)
     | Inst_Call (srcReg: RegIdx) (optLink: option RegIdx) callSentryInst
@@ -697,19 +827,45 @@ Section Machine.
 
     (* WIP *)
     Abbreviation ThreadIdx := nat (only parsing).
+
+    (** What a step of the current thread reports: a trap ([Ev_Exception]); a call, with the PCC,
+        register file and interrupt status it installs; a return, with the same; or a general
+        instruction ([Ev_General]).  The properties module treats [Ev_General], together with
+        thread switches, as the same-domain events, and the other three as crossings between
+        protection domains. *)
     Inductive SameThreadEvent :=
     | Ev_Exception
     | Ev_Call (pcc: PCC) (rf: RegisterFile) (ints: InterruptStatus)
     | Ev_Ret (pcc: PCC) (rf: RegisterFile) (ints: InterruptStatus)
     | Ev_General.
+
+    (** A machine event: a switch of the current thread to index [idx], or an event of thread
+        [idx]. *)
     Inductive Event :=
     | Ev_SwitchThreads (idx: nat)
     | Ev_SameThread (idx: ThreadIdx) (ev: SameThreadEvent).
+
+    (** The events of an execution, most recent first: [MachineStep] conses each new event onto
+        the front. *)
     Definition Trace := list Event.
 
+    (** ** Fetch, decode, execute
+
+        The step relation, parametric in how an instruction is fetched ([fetchAddrs]: the
+        addresses read for a program counter), how the fetched bytes are decoded ([decode]), and
+        the payload a fetch that fails the PCC check traps with ([pccNotInBounds]; the check,
+        [fetchAddrsInBounds], covers bounds, sealing and execute permission). *)
     Section FetchDecodeExecute.
+
+      (** Which addresses a fetch at a program counter reads, given the memory. *)
       Variable fetchAddrs: FullMemory -> Addr -> list Addr.
       (* Addresses fetched should not depend on arbitrary memory regions. *)
+
+      (** A fetch that depends on nothing but the bytes at addresses fixed by the program
+          counter: some function of the counter alone gives addresses such that two memories
+          agreeing on the bytes at those addresses give the same fetch.  Declared as context
+          just below; none of the definitions of this section refer to it, so it is not a
+          parameter of [MachineStep]. *)
       Definition FetchAddrsOk :=
         exists (fn: Addr -> list Addr),
         forall mem1 mem2 addr,
@@ -719,26 +875,62 @@ Section Machine.
           fetchAddrs mem1 addr = fetchAddrs mem2 addr.
       Context {fetchAddrsOk: FetchAddrsOk}.
 
+      (** The decoder, from the fetched bytes to an [Inst], and the trap payload for a fetch that
+          fails the PCC check: the name says bounds, but [ThreadStep] uses it whenever
+          [fetchAddrsInBounds] fails, so also for a sealed PCC or one without execute permission. *)
       Variable decode : list Byte -> Inst.
       Variable pccNotInBounds: EXNInfo.
 
+      (** Fix one thread's full context [fc]: the user context (register file, PCC and memory)
+          and the system context (system thread state and interrupt status).  The nine
+          projections name its parts, and the step is defined over them. *)
       Section WithContext.
         Variable fc: UserContext * SystemContext.
+
+        (** The user context. *)
         Definition uc := fst fc.
+
+        (** The memory. *)
         Definition mem : FullMemory := snd uc.
+
+        (** The program-counter capability. *)
         Definition pcc := (fst uc).(thread_pcc).
+
+        (** The register file. *)
         Definition rf := (fst uc).(thread_rf).
+
+        (** The system context. *)
         Definition sc := snd fc.
+
+        (** The system thread state. *)
         Definition sts := fst sc.
+
+        (** The interrupt status. *)
         Definition ints := snd sc.
+
+        (** The exception program-counter capability, where a trap saves the faulting PCC. *)
         Definition mepcc := (fst sc).(thread_mepcc).
+
+        (** The trap-vector capability, where a trap continues. *)
         Definition mtcc := (fst sc).(thread_mtcc).
 
+        (** The context after a trap with payload [exnInfo]: execution continues at [mtcc] with
+            the register file unchanged, the new system state's MEPCC field holds the faulting
+            [pcc] (the old [mepcc] is discarded), the payload is recorded, and the trusted stack,
+            liveness, memory and interrupt status are as before.  The event is [Ev_Exception]. *)
         Definition exceptionState (exnInfo: EXNInfo): (UserContext * SystemContext) * SameThreadEvent :=
           (((Build_UserThreadState rf mtcc, mem),
              (Build_SystemThreadState pcc mtcc exnInfo sts.(thread_trustedStack) sts.(thread_alive), ints)
            ), Ev_Exception).
 
+        (** One step of the thread when the PCC check holds.  The bytes at the addresses that
+            [fetchAddrs] returns for the PCC's cursor are decoded, and the instruction's function
+            runs: a general instruction yields new user and system contexts ([Ev_General]); a
+            call yields the new PCC, register file and interrupt status, with the system thread
+            state and memory unchanged ([Ev_Call]); a return yields the new PCC and interrupt
+            status, with the register file, system thread state and memory unchanged ([Ev_Ret]);
+            an exception instruction traps with its payload, and so does any instruction whose
+            function returns [Exn]. *)
         Definition threadStepFunction: (UserContext * SystemContext) * SameThreadEvent :=
           match decode (map (readByte mem) (fetchAddrs mem pcc.(capCursor))) with
           | Inst_General generalInst wf =>
@@ -762,17 +954,24 @@ Section Machine.
               exceptionState (exnInst uc)
           end.
 
+        (** The fetch is permitted: every address read lies within the PCC's bounds, so does the
+            cursor, the PCC is unsealed, and it carries execute permission. *)
         Definition fetchAddrsInBounds := Subset (fetchAddrs mem pcc.(capCursor)) pcc.(capAddrs)
                                          /\ In pcc.(capCursor) pcc.(capAddrs)
                                          /\ isSealed pcc = false
                                          /\ In Perm.Exec pcc.(capPerms).                                                            
 
 
+        (** The thread-step relation on the context: if the PCC check [fetchAddrsInBounds] holds
+            the step is [threadStepFunction]; if not, it is the trap [pccNotInBounds].  The two
+            cases exclude each other, and together they cover every context classically:
+            [fetchAddrsInBounds] is a proposition with no decision procedure here. *)
         Inductive ThreadStep : ((UserContext * SystemContext) * SameThreadEvent) -> Prop :=
         | GoodThreadStep (inBounds: fetchAddrsInBounds) : ThreadStep threadStepFunction
         | BadUserFetch (notInBounds: ~ fetchAddrsInBounds) : ThreadStep (exceptionState pccNotInBounds).
       End WithContext.
 
+      (** The machine with [tid] as its current thread and nothing else changed. *)
       Definition setMachineThread (m: Machine) (tid: nat): Machine :=
         {| machine_memory := m.(machine_memory);
            machine_interruptStatus := m.(machine_interruptStatus);
@@ -783,6 +982,12 @@ Section Machine.
       (* TODO: Can we just have a single MachineStep constructor,
          where if interrupts are disabled, the thread has to match the previous step's?
          Would such a change create a problem when it comes to implementing the thread switcher? *)
+
+      (** A step of the current thread of [m1] that produces [m2]: the current thread index is
+          the same in both; every other thread is unchanged; the current thread is alive and
+          takes a [ThreadStep] from its context in [m1], with [m1]'s memory and interrupt status,
+          to its context in [m2], with [m2]'s; and [m2] holds the resulting thread state at that
+          index.  The event names the thread. *)
       Inductive SameThreadStep : Machine -> Machine -> Event -> Prop :=
       | SameThreadStepOk :
         forall m1 m2 ev
@@ -799,6 +1004,12 @@ Section Machine.
                    nth_error m2.(machine_threads) m2.(machine_curThreadId) = Some (Build_Thread userSt' sysSt')),
           SameThreadStep m1 m2 (Ev_SameThread m2.(machine_curThreadId) ev).
 
+      (** The step relation over a machine and its trace.  Either a thread switch
+          ([Step_SwitchThreads]): allowed only with interrupts enabled, to any index below the
+          thread count, the current one included, and nothing but the current thread index
+          changes; or the current thread takes a [SameThreadStep].  Each step conses its event
+          onto the trace.  The properties module states what holds of every reachable state as an
+          invariant over this relation. *)
       Inductive MachineStep : Machine * Trace -> Machine * Trace -> Prop :=
       | Step_SwitchThreads m tr tid'
           (iEnabled: m.(machine_interruptStatus) = InterruptsEnabled)

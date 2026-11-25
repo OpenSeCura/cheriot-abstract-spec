@@ -25,6 +25,19 @@ Create HintDb ReachableCap.
 
 Set Nested Proofs Allowed.
 
+(** * Lemmas about the model
+
+    What [Spec] lets one prove without any configuration: the addresses reachable with a given
+    permission and the disjointness predicates ([ReachabilityDefs]); properties of the one-step
+    relations on capabilities ([CapStepLemmas]); how reachability behaves under larger source
+    sets and under valid memory updates ([ReachableCapLemmas], [MemUpdateLemmas]); that a memory
+    update authorized by capabilities disjoint from a set leaves that set's reach unchanged
+    ([SeparationLemmas]); what a well-formed instruction preserves ([WFInstructionLemmas]); and
+    what a same-thread step keeps ([Step]).  All of it under the parameters of [Spec], bound
+    once in [WithContext]. *)
+
+(** The parameters of [Spec] (the ISA parameters, the byte and key types, the capability
+    encoding), bound for every lemma below. *)
 Section WithContext.
   Context [ISA: ISA_params].
   Context {machineTypeParams: MachineTypeParams}.
@@ -38,7 +51,10 @@ Section WithContext.
   (* Notation RegisterFile := (@RegisterFile Byte Key). *)
   (* Notation Thread := (@Thread Byte Key). *)
 
+  (** The capability size is positive. *)
   Section ISA_params.
+
+    (** [ISA_CAPSIZE_BYTES] is [2 ^ ISA_LG_CAPSIZE_BYTES], hence positive. *)
     Lemma ISA_CAPSIZE_BYTES_NONZERO:
       ISA_CAPSIZE_BYTES > 0.
     Proof.
@@ -47,43 +63,63 @@ Section WithContext.
     Qed.
   End ISA_params.
 
+  (** Addresses reachable with a given permission, and the disjointness and inclusion predicates
+      the properties are stated with.  Each is built on [ReachableAddr] ([Spec]), which reaches
+      an address through some capability reachable from [caps] in [mem]. *)
   Section ReachabilityDefs.
   (* Addresses reachable with load permission. *)
+
+    (** Reachable through a capability with the load permission. *)
     Definition ReachableReadAddr (mem: FullMemory) (caps: list Cap) (a: Addr) :=
       exists p cs cbs ,
         ReachableAddr mem caps a 1 p cs cbs /\ (In Perm.Load p).
 
     (* Addresses reachable with write permission. *)
+
+    (** Reachable through a capability with the store permission. *)
     Definition ReachableWriteAddr (mem: FullMemory) (caps: list Cap) (a: Addr) :=
       exists p cs cbs ,
         ReachableAddr mem caps a 1 p cs cbs /\ (In Perm.Store p).
 
     (* Addresses reachable with execute permission. *)
+
+    (** Reachable through a capability with the execute permission. *)
     Definition ReachableExecAddr (mem: FullMemory) (caps: list Cap) (a: Addr) :=
       exists p cs cbs ,
         ReachableAddr mem caps a 1 p cs cbs /\ (In Perm.Exec p).
 
     (* Addresses reachable with read or write permission. *)
+
+    (** Reachable with load or with store permission. *)
     Definition ReachableRWAddr (mem: FullMemory) (caps: list Cap) (a: Addr) :=
       ReachableReadAddr mem caps a \/
         ReachableWriteAddr mem caps a.
 
     (* Addresses reachable with read, write, or execute permission. *)
+
+    (** Reachable with load, store or execute permission; the footprint condition of a well-formed
+        compartment ([WFCompartment] in [Properties]) is stated with it. *)
     Definition ReachableRWXAddr (mem: FullMemory) (caps: list Cap) (a: Addr) :=
       exists p cs cbs,
         ReachableAddr mem caps a 1 p cs cbs /\ (In Perm.Load p \/ In Perm.Store p \/ In Perm.Exec p).
 
+    (** No address is reachable with load or store permission from both [c1] and [c2]: the
+        isolation of two threads' capabilities ([IsolatedThreads] in [Properties]). *)
     Definition RWAddressesDisjoint (mem: FullMemory) (c1 c2: list Cap) : Prop :=
       forall a,
         ReachableRWAddr mem c1 a ->
         ReachableRWAddr mem c2 a ->
         False.
 
+    (** Everything reachable from [caps_cur] in [m_cur] was reachable from [caps_init] in [m_init]:
+        the per-thread monotonicity the main theorem establishes. *)
     Definition ReachableCapSubset (m_init m_cur: FullMemory) (caps_init caps_cur: list Cap) : Prop :=
       forall caps,
         ReachableCaps m_cur caps_cur caps ->
         ReachableCaps m_init caps_init caps.
 
+    (** No address writable through [c1] is readable through [c2]; the one-directional form of
+        [RWAddressesDisjoint] that the separation lemmas take. *)
     Definition WriteReadDisjoint (mem: FullMemory) (c1 c2: list Cap) : Prop :=
       forall a,
         ReachableWriteAddr mem c1 a ->
@@ -91,8 +127,13 @@ Section WithContext.
         False.
   End ReachabilityDefs.
 
+  (** Properties of the one-step relations on capabilities: [Restrict] is a preorder that
+      shrinks keys and bounds and keeps the sealing state, [attenuate] yields a restriction, and
+      [RestrictUnsealed] on an unsealed capability is a [Restrict]. *)
   Section CapStepLemmas.
     (* Attenuate is monotonic. *)
+
+    (** Loading [y] through [x] yields a restriction of [y]. *)
     Lemma AttenuateRestrict:
       forall (x y: Cap),
         Restrict y (attenuate x y).
@@ -107,6 +148,8 @@ Section WithContext.
            end.
       all: by (apply internal_Label_dec_bl || apply Perm.internal_t_dec_bl).
     Qed.
+
+    (** A restriction holds no sealing key the original lacks. *)
     Lemma RestrictCapSealingKeysSubset:
       forall (c c': Cap),
       Restrict c c' ->
@@ -116,6 +159,8 @@ Section WithContext.
         destruct H; cbv[EqSet Subset] in *; auto.
       intros. rewrite<-restrictSealedSealingKeysEq; auto.
     Qed.
+
+    (** A restriction holds no unsealing key the original lacks. *)
     Lemma RestrictCapUnsealingKeysSubset:
       forall (c c': Cap),
       Restrict c c' ->
@@ -125,6 +170,8 @@ Section WithContext.
         destruct H; cbv[EqSet Subset] in *; auto.
       intros. rewrite<-restrictSealedUnsealingKeysSubset; auto.
     Qed.
+
+    (** A restriction keeps the sealing state. *)
     Lemma RestrictSealedEq:
       forall (c c': Cap),
       Restrict c c' ->
@@ -133,6 +180,8 @@ Section WithContext.
       cbv[Restrict]. intros. case_match;
         destruct H; cbv[SealEq] in *; rewrite_solve.
     Qed.
+
+    (** A restriction's bounds lie within the original's. *)
     Lemma RestrictCapAddrsSubset:
       forall (c c': Cap),
       Restrict c c' ->
@@ -143,6 +192,7 @@ Section WithContext.
       intros. rewrite<-restrictSealedAddrsEq; auto.
     Qed.
 
+    (** [Restrict] is preserved by unsealing both sides. *)
     Lemma RestrictSetCapUnsealed:
       forall (y z: Cap),            
         Restrict y z ->
@@ -156,6 +206,7 @@ Section WithContext.
                  end; auto.
     Qed.
 
+    (** [Restrict] is reflexive. *)
     Lemma RestrictRefl: forall (x: Cap), Restrict x x.
     Proof.
       intros. cbv[Restrict].
@@ -163,6 +214,7 @@ Section WithContext.
       all: reflexivity.
     Qed.
 
+    (** [Restrict] is transitive. *)
     Lemma RestrictTrans:
       forall (x y z: Cap),
         Restrict x y -> Restrict y z -> Restrict x z.
@@ -183,6 +235,7 @@ Section WithContext.
              end.
     Qed.
 
+    (** On an unsealed capability, [RestrictUnsealed] is [Restrict]. *)
     Lemma RestrictUnsealedOk:
       forall (c1 c2: Cap),
         RestrictUnsealed c1 c2 ->
@@ -191,11 +244,15 @@ Section WithContext.
     Proof.
       cbv[Restrict isSealed]. intros. by case_match. 
     Qed.
+
+    (** Unsealing an unsealed capability changes nothing. *)
     Lemma setCapSealedNoneEq:
       forall (c: Cap), capSealed c = None -> setCapSealed c None = c.
     Proof.
       cbv[setCapSealed]. destruct c; intros; cbn in *; subst; auto.
     Qed.
+
+    (** Setting the sealing state twice keeps the last. *)
     Lemma setCapSealed_inv:
       forall (x: Cap) (optSeal optSeal': option SealT),
         setCapSealed (setCapSealed x optSeal) optSeal' = setCapSealed x optSeal'.
@@ -205,8 +262,10 @@ Section WithContext.
 
   End CapStepLemmas.
 
+  (** Reachability grows with the source set and composes along [ReachableCapSubset]. *)
   Section ReachableCapLemmas.
 
+    (** A capability reachable from [caps] is reachable from any superset. *)
     Lemma ReachableCapIncrease:
       forall mem caps capss caps',
         ReachableCap mem caps caps' ->
@@ -221,6 +280,8 @@ Section WithContext.
       - apply StepSeal with (x := x) (y := y); auto.
       - apply StepUnseal with (x := x) (y := y); auto.
     Qed.
+
+    (** Reachability of a list is preserved by appending the same capabilities to both sides. *)
     Lemma ReachableCaps_app:
       forall mem c1 c2 cs,
         ReachableCaps mem c1 c2 ->
@@ -233,6 +294,9 @@ Section WithContext.
       - eapply ReachableCapIncrease; eauto. apply Subset_app.
       - constructor. apply in_app_iff; auto.
     Qed.
+
+    (** Through a [ReachableCapSubset], a capability reachable in the current state is reachable
+        in the initial one. *)
     Lemma ReachableCapSubsetImpliesReachableCap:
       forall mem mem1 cs cs1 c,
       ReachableCapSubset mem mem1 cs cs1 ->
@@ -248,9 +312,16 @@ Section WithContext.
 
   End ReachableCapLemmas.
 
+  (** How reachability behaves across a valid memory update ([ValidMemUpdate] and its three
+      parts): nothing becomes reachable in the new memory that was not reachable in the old one
+      from the capabilities that authorized the update, and the update conditions are monotonic
+      in the authorizing set. *)
   Section MemUpdateLemmas.
     (* After a valid memory update, if a cap can be loaded from the new memory
        then it must have been reachable from the old memory. *)
+
+    (** A capability loaded in the new memory through a capability reachable in the old one was
+        reachable in the old one, when the capability stores were valid. *)
     Lemma LoadCapUpdate:
       forall mem mem' x y z caps,
       ReachableCap mem caps x ->
@@ -272,6 +343,7 @@ Section WithContext.
         eapply AttenuateRestrict; eauto.
     Qed.
 
+    (** The same under the whole [ValidMemUpdate]. *)
     Lemma LoadCapUpdate':
       forall mem mem' x y z caps,
       ReachableCap mem caps x ->
@@ -283,6 +355,8 @@ Section WithContext.
       intros; eapply LoadCapUpdate; destruct_products; eauto.
     Qed.
 
+    (** What is reachable in the new memory from capabilities reachable in the old one was
+        reachable in the old one: the one-capability form. *)
     Lemma ReachableCap_ValidUpdate:
       forall mem mem' (caps caps': list Cap) c,
         ReachableCap mem' caps' c ->
@@ -298,6 +372,8 @@ Section WithContext.
       - eapply StepSeal with (3 := xyz); auto.
       - eapply StepUnseal with (3 := xyz); auto.
     Qed.
+
+    (** The same for a reachable address, with its size, permissions and labels. *)
     Lemma ReachableAddr_ValidUpdate:
       forall mem mem' caps caps' a sz p cs cbs,
         ReachableAddr mem' caps' a sz p cs cbs ->
@@ -308,6 +384,7 @@ Section WithContext.
       intros. inv H. constructor; eauto. eapply ReachableCap_ValidUpdate; eauto.
     Qed.
 
+    (** The same for a readable address. *)
     Lemma ReachableReadAddr_ValidUpdate:
       forall mem mem' caps caps' a,
         ReachableReadAddr mem' caps' a ->
@@ -318,6 +395,8 @@ Section WithContext.
       cbv[ReachableReadAddr]. intros; destruct_products.
       do 3 eexists; split; eauto. by (eapply ReachableAddr_ValidUpdate).
     Qed.
+
+    (** The same for a writable address. *)
     Lemma ReachableWriteAddr_ValidUpdate:
       forall mem mem' caps caps' a,
         ReachableWriteAddr mem' caps' a ->
@@ -328,6 +407,8 @@ Section WithContext.
       cbv[ReachableWriteAddr]. intros; destruct_products.
       do 3 eexists; split; eauto. by (eapply ReachableAddr_ValidUpdate).
     Qed.
+
+    (** The same for an address readable or writable. *)
     Lemma ReachableRWAddr_ValidUpdate:
       forall mem mem' caps caps' a,
         ReachableRWAddr mem' caps' a ->
@@ -338,6 +419,8 @@ Section WithContext.
       cbv[ReachableRWAddr]. intros; destruct_products.
       destruct H; [ left; by (eapply ReachableReadAddr_ValidUpdate) | right; by (eapply ReachableWriteAddr_ValidUpdate) ].
     Qed.
+
+    (** A reachable address stays reachable from a larger source set. *)
     Lemma ReachableAddrSubset:
       forall caps' mem addr sz p cs cbs caps,
         ReachableAddr mem caps' addr sz p cs cbs ->
@@ -350,6 +433,7 @@ Section WithContext.
       eapply ReachableCapIncrease; eauto.
     Qed.
 
+      (** The same for [ReachableRWXAddr]. *)
       Lemma ReachableRWXAddrSubset:
         forall mem caps addr caps',
           ReachableRWXAddr mem caps' addr ->
@@ -361,6 +445,7 @@ Section WithContext.
         do 3 eexists; split; eauto; eapply ReachableAddrSubset; eauto.
       Qed.
 
+    (** The list form of [ReachableCap_ValidUpdate]. *)
     Lemma ReachableCaps_ValidUpdate:
       forall mem mem' caps caps' cs,
       ValidMemUpdate mem caps mem' ->
@@ -374,6 +459,9 @@ Section WithContext.
       eapply ReachableCap_ValidUpdate; eauto.
     Qed.
 
+    (** [ReachableCapSubset] is preserved by a valid update of the current memory authorized by
+        the current capabilities, when the new capabilities are reachable from them: the
+        monotonicity step for the running thread. *)
     Lemma ReachableCapSubset_ValidUpdate:
       forall mem0 mem mem' caps0 caps caps',
       ReachableCapSubset mem0 mem caps0 caps ->
@@ -388,6 +476,7 @@ Section WithContext.
       specialize ReachableCaps_ValidUpdate with (1 := hmem) (2 := hcaps) (3 := hcaps'); auto.
     Qed.
 
+    (** Store permission for an address is monotonic in the authorizing set. *)
     Lemma StPermForAddrSubset:
       forall mem caps caps' capa a size ,
         StPermForAddr mem caps capa a size ->
@@ -399,6 +488,8 @@ Section WithContext.
       split_and!; auto.
       eapply ReachableCapIncrease; eauto.
     Qed.
+
+    (** Store permission for a capability is monotonic in the authorizing set. *)
     Lemma StPermForCapSubset:
       forall mem caps caps' addr capa,
         StPermForCap mem caps addr capa ->
@@ -409,6 +500,8 @@ Section WithContext.
       intros. destruct_products. split; auto.
       eapply StPermForAddrSubset; eauto.
     Qed.
+
+    (** A valid tag removal stays valid for a larger authorizing set. *)
     Lemma ValidMemTagRemovalSubset:
       forall mem mem' caps caps',
         ValidMemTagRemoval mem caps mem' ->
@@ -419,6 +512,8 @@ Section WithContext.
       intros. specialize H with (1 := H1) (2 := H2). destruct_products.
       eexists. eapply StPermForCapSubset; eauto.
     Qed.
+
+    (** A valid data update stays valid for a larger authorizing set. *)
     Lemma ValidMemDataUpdateSubset:
       forall mem mem' caps caps',
         ValidMemDataUpdate mem caps mem' ->
@@ -429,6 +524,8 @@ Section WithContext.
       intros. specialize H with (1 := H1). destruct_products.
       eexists. eapply StPermForAddrSubset; eauto.
     Qed.
+
+    (** A valid capability update stays valid for a larger authorizing set. *)
     Lemma ValidMemCapUpdateSubset:
       forall mem mem' caps caps',
         ValidMemCapUpdate mem caps mem' ->
@@ -443,6 +540,8 @@ Section WithContext.
       - eexists; split; eauto.
         eapply StPermForCapSubset; eauto.
     Qed.
+
+    (** A valid memory update stays valid for a larger authorizing set. *)
     Lemma ValidMemUpdateSubset:
       forall mem mem' caps caps',
         ValidMemUpdate mem caps mem' ->
@@ -454,6 +553,7 @@ Section WithContext.
       split_and!; by (eapply ValidMemCapUpdateSubset || eapply ValidMemTagRemovalSubset || eapply ValidMemDataUpdateSubset).
     Qed.
 
+    (** A slot that reads as a capability has its tag set. *)
     Lemma readCapImpliesTag:
       forall mem capa cap,
         readCap mem capa = inl cap ->
@@ -466,7 +566,14 @@ Section WithContext.
 
   End MemUpdateLemmas.
 
+  (** A memory update authorized by capabilities whose writable addresses are disjoint from the
+      readable addresses of a set [t] makes nothing new reachable from [t]: everything reachable
+      from [t] afterwards was reachable before.  This is the new-to-old direction only; tag
+      removal may remove old paths, so the converse is not claimed.  These lemmas are what makes
+      one thread's step harmless to the others in the main theorem. *)
   Section SeparationLemmas.
+
+    (** [RWAddressesDisjoint] is symmetric. *)
     Lemma RWAddressDisjointUpdate_symmetry:
       forall mem xi xj,
       RWAddressesDisjoint mem xi xj <->
@@ -476,6 +583,7 @@ Section WithContext.
       intuition eauto.
     Qed.
 
+    (** Read/write disjointness implies write/read disjointness. *)
     Lemma RWAddressesDisjointImpliesWriteReadDisjoint:
       forall mem xi xj,
       RWAddressesDisjoint mem xi xj ->
@@ -485,6 +593,9 @@ Section WithContext.
       intros. eapply H; eauto.
     Qed.
 
+    (** Under [WriteReadDisjoint], no address is both in the bounds of an unsealed storing
+        capability reachable from [caps] and in those of an unsealed loading capability reachable
+        from [caps']. *)
     Lemma WriteReadDisjointImpliesFalse:
       forall mem caps caps' x y a,
       WriteReadDisjoint mem caps caps' ->
@@ -506,6 +617,8 @@ Section WithContext.
         unfold Subset; cbn; intuition; subst; auto.
     Qed.
 
+    (** A load through [x] in the updated memory was the same load in the old memory, when the
+        update was authorized by capabilities whose writes are disjoint from [t]'s reads. *)
     Lemma LoadCapUpdateDisjointUnchanged:
       forall mem caps mem' x y z t,
         ReachableCap mem' t x ->
@@ -534,6 +647,7 @@ Section WithContext.
       end; constructor; auto.
     Qed.
 
+    (** A capability reachable from [t] in the updated memory was reachable from [t] before. *)
     Lemma ReachableCapDisjointUnchanged':
       forall mem caps mem' t c,
         ReachableCap mem' t c ->
@@ -550,6 +664,7 @@ Section WithContext.
       - eapply StepUnseal with (3:= xyz); auto.
     Qed.
 
+    (** The same for a reachable address. *)
     Lemma ReachableAddrDisjointUnchanged:
       forall mem caps mem' t a sz p cs cbs,
         ReachableAddr mem' t a sz p cs cbs ->
@@ -562,6 +677,7 @@ Section WithContext.
       eapply ReachableCapDisjointUnchanged'; eauto.
     Qed.
 
+    (** The same for a readable address. *)
     Lemma ReachableReadAddrDisjointUnchanged:
       forall mem caps mem' t a,
         ReachableReadAddr mem' t a  ->
@@ -574,6 +690,7 @@ Section WithContext.
       eapply ReachableAddrDisjointUnchanged; eauto.
     Qed.
 
+    (** The same for a writable address. *)
     Lemma ReachableWriteAddrDisjointUnchanged:
       forall mem caps mem' t a,
         ReachableWriteAddr mem' t a  ->
@@ -586,6 +703,7 @@ Section WithContext.
       eapply ReachableAddrDisjointUnchanged; eauto.
     Qed.
 
+    (** The same for an address readable or writable. *)
     Lemma ReachableRWAddrDisjointUnchanged:
       forall mem caps mem' t a,
         ReachableRWAddr mem' t a  ->
@@ -600,6 +718,8 @@ Section WithContext.
       - right. eapply ReachableWriteAddrDisjointUnchanged; eauto.
     Qed.
 
+    (** Read/write disjointness between the updating set and another is preserved by a valid
+        update, for the updater's new capabilities. *)
     Lemma RWAddressDisjointUpdate:
       forall mem mem' xi xi' xj,
       ValidMemUpdate mem xi mem' ->
@@ -618,6 +738,8 @@ Section WithContext.
         eapply RWAddressesDisjointImpliesWriteReadDisjoint; eauto.
     Qed.
 
+    (** Read/write disjointness between two sets is preserved by a valid update authorized by a
+        third set disjoint from both. *)
     Lemma RWAddressDisjointUpdateUnchanged:
       forall mem mem' xi xj xk,
       ValidMemUpdate mem xk mem' ->
@@ -635,6 +757,8 @@ Section WithContext.
            try solve[eapply RWAddressesDisjointImpliesWriteReadDisjoint; eauto].
     Qed.
 
+    (** [ReachableCapSubset] for a set [t] survives a valid update (tag removal and capability
+        stores) authorized by capabilities whose writes are disjoint from [t]'s reads. *)
     Lemma ReachableCapSubsetDisjointUnchanged':
       forall mem0 mem mem' t0 t caps,
       ReachableCapSubset mem0 mem t0 t ->
@@ -651,6 +775,7 @@ Section WithContext.
       eapply ReachableCapDisjointUnchanged'; eauto.
     Qed.
 
+    (** The same under the whole [ValidMemUpdate]: the monotonicity step for an idle thread. *)
     Lemma ReachableCapSubsetUpdateDisjointUnchanged:
       forall mem0 mem mem' t0 t caps,
       ReachableCapSubset mem0 mem t0 t ->
@@ -662,6 +787,7 @@ Section WithContext.
       intros; destruct_products; by (eapply ReachableCapSubsetDisjointUnchanged').
     Qed.
 
+    (** The same as [RWAddressesDisjointImpliesWriteReadDisjoint]. *)
     Lemma RWDisjointImpliesWriteReadDisjoint:
       forall m xi xj,
       RWAddressesDisjoint m xi xj ->
@@ -672,7 +798,10 @@ Section WithContext.
     Qed.
   End SeparationLemmas.
 
+  (** A thread's user-state capabilities are among its capabilities. *)
   Section CapsOf.
+
+    (** The PCC and the register file's capabilities are among what [capsOfThread] lists. *)
     Lemma SubsetCapsOfUserTS:
       forall (thread: Thread), 
         Subset (capsOfUserTS (thread_userState thread)) (capsOfThread thread).
@@ -684,7 +813,10 @@ Section WithContext.
   End CapsOf.
 
 
+  (** What the well-formedness of an instruction ([Spec]) gives for a successful execution. *)
   Section WFInstructionLemmas.
+
+    (** A register file updated at one in-range index with a value stays valid. *)
     Lemma ValidRfUpdate:
       forall rf rf' v idx,
         ValidRf rf ->
@@ -698,6 +830,9 @@ Section WithContext.
       eapply listUpdate_length; eauto.
     Qed.
 
+    (** A well-formed general instruction that succeeds performs a valid memory update, keeps its
+        capabilities reachable from the ones it started with (user and system state together),
+        runs and ends with an executable PCC, and keeps the register file valid. *)
     Lemma generalInstOkCommon:
       forall userSt mem sysSt istatus userSt' mem' sysSt' istatus' generalInst,
         WfGeneralInst generalInst ->
@@ -732,6 +867,9 @@ Section WithContext.
         + eapply ValidMemUpdateSubset; eauto. simplify_Subset.
         + apply ReachableCaps_app. auto.
     Qed.
+
+    (** A well-formed call that succeeds keeps the register file valid and installs an executable
+        PCC. *)
     Lemma callSentryOkCommon:
       forall callSentryInst srcReg optLink userSt mem istatus pcc' rf' istatus',
         WfCallSentryInst callSentryInst srcReg optLink ->
@@ -754,6 +892,8 @@ Section WithContext.
 
   End WFInstructionLemmas.
 
+  (** What a same-thread step keeps, under the fetch, decode and trap parameters of
+      [MachineStep]. *)
   Section Step.
     Context {fetchAddrs: FullMemory -> Addr -> list Addr}.
     Context {decode: list Byte -> @Inst _ _ capEncodeDecode}.
@@ -762,6 +902,7 @@ Section WithContext.
     Abbreviation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
     Abbreviation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
 
+    (** A same-thread step keeps the number of threads, when the current index is in range. *)
     Lemma SameThreadStep_lengthThreads:
       forall m1 m2 ev,
         machine_curThreadId m1 < length (machine_threads m1) ->
@@ -774,6 +915,7 @@ Section WithContext.
       rewrite<-threadIdEq. eauto.
     Qed.
 
+    (** A same-thread step from a machine whose current index is in range leaves it in range. *)
     Lemma SameThreadStep_curId:
       forall m1 m2 ev,
         machine_curThreadId m1 < length (machine_threads m1) ->

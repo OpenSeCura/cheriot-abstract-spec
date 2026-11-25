@@ -1646,18 +1646,20 @@ Module CompartmentIsolationValidation.
      *)
     Inductive ReachableCompartment : Config -> nat -> nat -> Prop :=
     | ReachableCaller:
-        forall config idx1 idx2 c1 cap addr,
+        forall config idx1 idx2 c1 c2 cap addr,
           nth_error config.(configCompartments) idx1 = Some c1 ->
           In (ImportEntry_SealedCapToExportEntry cap) c1.(compartmentImports) ->
+          nth_error config.(configCompartments) idx2 = Some c2 ->
           In addr cap.(capAddrs) ->
-          AddrHasProvenance config addr (Provenance_Compartment idx2) ->
+          In addr (exportTableFootprint c2) ->
           ReachableCompartment config idx1 idx2
     | ReachableCallee:
-        forall config idx1 idx2 c1 cap addr,
+        forall config idx1 idx2 c1 c2 cap addr,
           nth_error config.(configCompartments) idx1 = Some c1 ->
           In (ImportEntry_SealedCapToExportEntry cap) c1.(compartmentImports) ->
+          nth_error config.(configCompartments) idx2 = Some c2 ->
           In addr cap.(capAddrs) ->
-          AddrHasProvenance config addr (Provenance_Compartment idx2) ->
+          In addr (exportTableFootprint c2) ->
           ReachableCompartment config idx2 idx1
     | ReachableLibrary:
         forall config idx1 idx2 c1 cap addr,

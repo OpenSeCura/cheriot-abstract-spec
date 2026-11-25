@@ -1582,9 +1582,9 @@ Module SwitcherProperty.
             SwitcherEntry_Invariant tid st_init st.
 
           Record CompartmentReturn_Pre (tid: nat) (st: ThreadState) : Prop :=
-          { CRetReturn_PCCAddr: pcc st = CompartmentCallPCC
+          { CRetReturn_PCCAddr: pcc st = CompartmentReturnPCC
           ; CRetReturn_TrustedStack: ValidTrustedStack config (sts st).(thread_trustedStack)
-          ; CRetReturn_Invariant: CompartmentCall_Invariant tid st st
+          ; CRetReturn_Invariant: CompartmentReturn_Invariant tid st st
           }.
 
           Record CompartmentReturn_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=

@@ -471,9 +471,9 @@ Section Machine.
 
       (* TODO: Check if we can remove checking Load/Cap permission *)
       Definition ReachableTagSame :=
-        forall capa p cs cbs, ReachableAddr m1 caps capa ISA_CAPSIZE_BYTES p cs cbs ->
+        forall capa p cs cbs, ReachableAddr m1 caps (fromCapAddr capa) ISA_CAPSIZE_BYTES p cs cbs ->
                               In Perm.Load p -> In Perm.Cap p ->
-                              (ReachableAddr m2 caps capa ISA_CAPSIZE_BYTES p cs cbs /\
+                              (ReachableAddr m2 caps (fromCapAddr capa) ISA_CAPSIZE_BYTES p cs cbs /\
                                  readTag m1 capa = readTag m2 capa).
 
       Definition ReachableMemSame := ReachableDataSame /\ ReachableTagSame.

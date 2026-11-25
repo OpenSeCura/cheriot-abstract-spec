@@ -1752,11 +1752,12 @@ Module CompartmentIsolationValidation.
             False).
       Definition SealedDataCapsIsolatedFromCompartment
         (mem: FullMemory) (srcCaps: list Cap) (cid: nat): Prop :=
-        (forall cap addr,
+        (forall cap addr c,
             ReachableCap mem srcCaps cap ->
             cap.(capSealed) = Some (inr config.(configSwitcher).(Switcher_key)) ->
             In addr cap.(capAddrs) ->
-            AddrHasProvenance config addr (Provenance_Compartment cid) ->
+            nth_error config.(configCompartments) cid = Some c ->
+            In addr (exportTableFootprint c) ->
             False).
 
       Definition IsolatedFromCompartment
@@ -2036,6 +2037,10 @@ Module CompartmentIsolationValidation.
               H1: In ?addr (compartmentFootprint ?comp) |- _ =>
                   let H' := fresh H1 "footprint" in 
                   learn_hyp (compartmentInConfigFootprint _ _ _ _ H H1) as H'
+              | H: nth_error (configCompartments _) _ = Some ?comp,
+              H1: In ?addr (exportTableFootprint ?comp) |- _ =>
+                  let H' := fresh H1 "footprint" in 
+                  learn_hyp (exportTableInConfigFootprint _ _ _ _ H H1) as H'
          end.
 
             
@@ -2097,29 +2102,10 @@ Module CompartmentIsolationValidation.
             saturate_invariants.
         - consider MutuallyIsolatedCompartment.
           cbv[SealedDataCapsIsolatedFromCompartment].
-          intros * hreach hsealed haddr hprov. destruct_products; option_simpl.
-          (* Sealed data caps come from import entries, which point into
-             export tables; export tables are disjoint from compartment
-             footprints, so the cap cannot point into compartment idx2. *)
-          assert (In (ImportEntry_SealedCapToExportEntry cap) (compartmentImports c1)) as himport.
-          { eapply WFCompartment_SealedDataCap with (config := config); cbv[isSealedDataCap];
-              saturate_invariants. }
-          assert (WFImportEntry config (ImportEntry_SealedCapToExportEntry cap)) as hwfimport.
-          { eapply WFCompartment_ImportEntries with (c := c1); eauto; saturate_invariants. }
-          destruct hwfimport as [_ hwfimport].
-          specialize (hwfimport cap eq_refl).
-          destruct hwfimport as (_ & _ & cexp & hcexp & hsubset).
-          apply In_nth_error in hcexp. destruct hcexp as (eidx & hcexp).
-          pose proof pf_wf_config as hwf. destruct hwf as [hsep _ _ _].
-          inv hprov.
-          assert (idx2 < length (configCompartments config)) by (apply nth_error_Some; congruence).
-          eapply hsep with (i := idx2)
-                           (j := length (configCompartments config) + length (configThreads config) + eidx).
-          + lia.
-          + eapply compartmentInConfigFootprint; eauto.
-          + eapply exportTableInConfigFootprint; eauto.
-          + eauto.
-          + eapply hsubset; eauto.
+          intros. destruct_products; option_simpl. eapply hisolatedrrrr; eauto.
+          eapply ReachableCaller; eauto.
+          eapply WFCompartment_SealedDataCap with (config := config); cbv[isSealedDataCap];
+            saturate_invariants.
       Qed.
 
       Lemma AddrsIsolatedFromCompartmentSubset:

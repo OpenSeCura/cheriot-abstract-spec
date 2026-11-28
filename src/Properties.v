@@ -1132,6 +1132,38 @@ Module SwitcherProperty.
             SwitcherMemEquivAtThread tid (mem st_init) mem' ->
             In_Switcher_Invariant tid st_init ((fst (uc st), mem'), sc st).
 
+          (* The thread is at the start of one of the switcher's return
+             paths (compartment return or error-handler return), with that
+             path's precondition holding. This is the disjunction of
+             CompartmentReturn_Pre and ExceptionReturn_Pre, spelled out
+             here because those are defined later. *)
+          Definition AtSwitcherReturnEntry (tid: nat) (st: ThreadState) : Prop :=
+            (pcc st = CompartmentReturnPCC \/ pcc st = ErrorHandlerReturnPCC) /\
+            ValidTrustedStack config (sts st).(thread_trustedStack) /\
+            SwitcherEntry_Invariant tid st st.
+
+          (* Each switcher contract (ExceptionHandlerOk, ExceptionReturnOk,
+             CompartmentCallOk, CompartmentReturnOk) runs the switcher until
+             one of two endings:
+             - Ending 1: the thread leaves system mode, back in user code,
+               and the contract's postcondition (e.g. CompartmentReturn_Post)
+               holds. This is the ordinary case, including a return or
+               unwind into the caller's own code.
+             - Ending 2 (ChainedReturn below): exactly one frame was popped
+               (as described by `unwound`), and returning through the saved
+               ra landed at one of the switcher's own return entries rather
+               than in user code. This happens on a tail call, where the
+               caller passed on the switcher's return sentry as its ra. The
+               next return path is then covered by that entry's own
+               contract. *)
+          Record ChainedReturn
+            (unwound: nat -> ThreadState -> ThreadState -> Prop)
+            (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
+            { Chain_Unwound: unwound tid st_init st
+            ; Chain_Entry: AtSwitcherReturnEntry tid st
+            ; Chain_OnlyStackChanged: NonStackMemPreserved config tid (mem st_init) (mem st)
+            }.
+
         End UnwindingStack.
 
         Section ExceptionHandler.
@@ -1358,7 +1390,11 @@ Module SwitcherProperty.
             Combinators.until
               ThreadStepOk
               (fun st => InSystemMode st /\ ExceptionEntry_Invariant tid init st)
-              (fun st => ~(InSystemMode st) /\ ExceptionEntry_Post tid init st)
+              (fun st =>
+                 (* Ending 1 *)
+                 (~(InSystemMode st) /\ ExceptionEntry_Post tid init st) \/
+                 (* Ending 2 *)
+                 ChainedReturn Post_UnwindStackForced tid init st)
               init.
 
         (* TODO: lift thread-local property to machine. This should
@@ -1428,7 +1464,11 @@ Module SwitcherProperty.
             Combinators.until
               ThreadStepOk
               (fun st => InSystemMode st /\ ExceptionReturn_Invariant tid init st)
-              (fun st => ~(InSystemMode st) /\ ExceptionReturn_Post tid init st)
+              (fun st =>
+                 (* Ending 1 *)
+                 (~(InSystemMode st) /\ ExceptionReturn_Post tid init st) \/
+                 (* Ending 2 *)
+                 ChainedReturn Post_UnwindStackForced tid init st)
               init.
          
         End ExceptionReturn.
@@ -1617,7 +1657,11 @@ Module SwitcherProperty.
             Combinators.until
               ThreadStepOk
               (fun st => InSystemMode st /\ CompartmentCall_Invariant tid init st)
-              (fun st => ~(InSystemMode st) /\ CompartmentCall_Post tid init st)
+              (fun st =>
+                 (* Ending 1 *)
+                 (~(InSystemMode st) /\ CompartmentCall_Post tid init st) \/
+                 (* Ending 2 *)
+                 ChainedReturn Post_UnwindStackForced tid init st)
               init.
 
         End CompartmentCall.
@@ -1651,7 +1695,11 @@ Module SwitcherProperty.
            Combinators.until
              ThreadStepOk
              (fun st => InSystemMode st /\ CompartmentReturn_Invariant tid init st)
-             (fun st => ~(InSystemMode st) /\ CompartmentReturn_Post tid init st)
+             (fun st =>
+                (* Ending 1 *)
+                (~(InSystemMode st) /\ CompartmentReturn_Post tid init st) \/
+                (* Ending 2 *)
+                ChainedReturn Post_UnwindStackReturnOk tid init st)
              init.
          
         End CompartmentReturn.

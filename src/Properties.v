@@ -1473,7 +1473,7 @@ Module SwitcherProperty.
           Definition postCompartmentCallCSP (init_csp: Cap) (newTop: Addr): Cap :=
           (* Reserve some compartment-invocation local space. *)
           let newCursor := newTop - STACK_ENTRY_RESERVED_SPACE in
-          setCapCursor (updateCapAddrs init_csp (filter(Nat.ltb newTop))) newCursor.
+          setCapCursor (updateCapAddrs init_csp (filter (fun a => Nat.ltb a newTop))) newCursor.
 
           Definition CompartmentCall_PostRfSpec_Ok
             (init_rf: RegisterFile)                       
@@ -1512,15 +1512,20 @@ Module SwitcherProperty.
                        readByte mem' addr = zeroByte /\
                        readTag mem' (toCapAddr addr) = false).
 
+          (* tcsp is the new trusted-stack frame's csp: initcsp's cursor
+             decremented by SPILL_SLOT_SIZE. The spill slots sit at
+             tcsp + slot * ISA_CAPSIZE_BYTES, where the return path
+             (PostRf_UnwindStack) reads them back. *)
           Definition compartmentCallMemOk
-            (initcsp: Cap) (initrf: RegisterFile) (newcsp: Cap) (mem: FullMemory) (mem': FullMemory) :=
+            (initcsp: Cap) (tcsp: Cap) (initrf: RegisterFile) (newcsp: Cap) (mem: FullMemory) (mem': FullMemory) :=
+            let spillSlot offset := updateCapCursor tcsp (Nat.add (offset * ISA_CAPSIZE_BYTES)) in
             (* All addresses reachable by the new csp are zeroed. *)
             compartmentCalleeStackZeroed newcsp mem mem' /\
             (* Spill pcc(ra), cgp, and callee-saved registers *)
-            RegP initrf (rf_s0 rfidx) (WriteStack mem' (updateCapCursor initcsp (Nat.add (SPILL_SLOT_cs0 - SPILL_SLOT_SIZE)))) /\
-            RegP initrf (rf_s1 rfidx) (WriteStack mem' (updateCapCursor initcsp (Nat.add (SPILL_SLOT_cs1 - SPILL_SLOT_SIZE)))) /\
-            RegP initrf (rf_ra rfidx) (WriteStack mem' (updateCapCursor initcsp (Nat.add (SPILL_SLOT_pcc - SPILL_SLOT_SIZE)))) /\
-            RegP initrf (rf_gp rfidx) (WriteStack mem' (updateCapCursor initcsp (Nat.add (SPILL_SLOT_cgp - SPILL_SLOT_SIZE)))) /\
+            RegP initrf (rf_s0 rfidx) (WriteStack mem' (spillSlot SPILL_SLOT_cs0)) /\
+            RegP initrf (rf_s1 rfidx) (WriteStack mem' (spillSlot SPILL_SLOT_cs1)) /\
+            RegP initrf (rf_ra rfidx) (WriteStack mem' (spillSlot SPILL_SLOT_pcc)) /\
+            RegP initrf (rf_gp rfidx) (WriteStack mem' (spillSlot SPILL_SLOT_cgp)) /\
             (* All csp addresses above initcsp are untouched. *)
             (forall addr, In addr initcsp.(capAddrs) ->
                           addr >= initcsp.(capCursor) ->
@@ -1557,15 +1562,15 @@ Module SwitcherProperty.
                        |}, entry.(exportEntryInterruptStatus)) /\
               (* PCC: points to compartment PCC offsetted by export entry offset. *)
               pcc st = updateCapCursor compartment.(compartmentPCC) (Nat.add entry.(exportEntryOffset)) /\
-              (* RF: zero non-argument registers. Chop off stack above the new TCSP. *)
+              (* RF: zero non-argument registers. The callee's csp covers only the stack below the new TCSP. *)
               let csp' := (postCompartmentCallCSP init_csp newTCSPCursor)  in
               (CompartmentCall_PostRfSpec_Ok (rf st_init) entry csp' compartment (rf st)) /\
               (* Mem:
                  - compartment callee stack is zeroed
-                 - spill registers at init_csp.(capCursor)
-                 - all memory other than init_csp.(capCursor) to base of stack should be unchanged
+                 - spill ra/cgp/s0/s1 into the slots at the new TCSP
+                 - the caller's stack at and above init_csp.(capCursor) is unchanged
               *)
-              compartmentCalleeStackZeroed csp' (mem st_init) (mem st)).
+              compartmentCallMemOk init_csp newTCSP (rf st_init) csp' (mem st_init) (mem st)).
 
           Definition CCall_PostRf_NotEnoughStack
             (rf_init: RegisterFile)

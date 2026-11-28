@@ -916,13 +916,20 @@ Module SwitcherProperty.
           setCapSealed ErrorHandlerReturnPCC (Some (inl RetEnableInterrupt)).
 
         (* After a compartment call, the switcher returns a backwards
-           sentry to .Lswitcher_after_compartment_call. *)
-        Definition switcherAfterCompartmentCallCap (istatus: InterruptStatus): Cap :=
-          let sentry := match istatus with
-                        | InterruptsEnabled => RetEnableInterrupt
-                        | InterruptsDisabled => RetDisableInterrupt
-                        end in 
-          setCapSealed CompartmentReturnPCC (Some (inl sentry)).
+           sentry to .Lswitcher_after_compartment_call. It always
+           disables interrupts, so the switcher's return path runs with
+           interrupts disabled whatever the callee's interrupt status. *)
+        Definition switcherAfterCompartmentCallCap : Cap :=
+          setCapSealed CompartmentReturnPCC (Some (inl RetDisableInterrupt)).
+
+        (* Interrupt status installed by returning through a return
+           sentry; None if the cap is not a return sentry. *)
+        Definition returnSentryInterruptStatus (ra: Cap) : option InterruptStatus :=
+          match ra.(capSealed) with
+          | Some (inl RetEnableInterrupt) => Some InterruptsEnabled
+          | Some (inl RetDisableInterrupt) => Some InterruptsDisabled
+          | _ => None
+          end.
 
         (* While in the switcher, we have ASR, our PCC is in the
            switcher's footprint, and fetch succeeds.
@@ -1048,7 +1055,10 @@ Module SwitcherProperty.
              - ra: new PCC restored from the stack. This could be zeroed but is not in the current implementation.
              - a0/a1: return values.
              - all other registers: zeroed.
-           * PCC: restored from the stack
+           * PCC: the caller's return sentry restored from the stack,
+             unsealed (as a jump through it would). The case applies
+             only if the saved value is a return sentry.
+           * Interrupt status: set by the caller's return sentry.
            * Stack: zeroed from base up to and including spilled registers.
            * Trusted stack: pop topmost frame. Ensure mtcc is equal to MTCC.
            *
@@ -1056,7 +1066,6 @@ Module SwitcherProperty.
            * register file values, other than return values in ret0 and ret1.
            * Notably, stack zeroing is based on the trusted stack csp.
            * 
-           * TODO: check interrupt status 
            * TODO: CSR_MSHWM 
            *)
           Definition Post_UnwindStackBase
@@ -1064,7 +1073,7 @@ Module SwitcherProperty.
             (ret1: RegisterFile -> CapOrBytes -> Prop)
             (tid: nat) (st_init: ThreadState) (st: ThreadState)
             : Prop :=
-            exists frame frame' frames exnInfo,
+            exists frame frame' frames exnInfo ra istatus,
               let tcsp := frame.(trustedStackFrame_CSP) in
               ValidCSP tcsp /\
               trustedStack_frames (thread_trustedStack (sts st_init)) = frame::frame'::frames /\
@@ -1073,13 +1082,16 @@ Module SwitcherProperty.
                           thread_exceptionInfo := exnInfo;
                           thread_trustedStack := Build_TrustedStack (frame'::frames);
                           thread_alive := thread_alive (sts st_init)
-                       |}, ints st_init) /\
+                       |}, istatus) /\
               (* mem': Zero stack region of callee. *)
               unwindStackOk tcsp (mem st_init) (mem st) /\
-              (* Restore PCC from stack. *)
+              (* Restore the caller's return sentry from the stack. *)
               (let readCapAtCSPOffset offset :=
                  ReadStack (mem st_init) (updateCapCursor tcsp (Nat.add (offset * ISA_CAPSIZE_BYTES))) in 
-                 readCapAtCSPOffset SPILL_SLOT_pcc (inl (pcc st))) /\
+                 readCapAtCSPOffset SPILL_SLOT_pcc (inl ra)) /\
+              (* Return through it: interrupt status from the sentry, PCC unsealed. *)
+              returnSentryInterruptStatus ra = Some istatus /\
+              pcc st = setCapSealed ra None /\
               (* rf: restore callee-saved registers and return arguments. *)
               (PostRfSpec_UnwindStack frame (mem st_init) (rf st)
                                       (ret0 (rf st_init)) (ret1 (rf st_init))
@@ -1430,15 +1442,13 @@ Module SwitcherProperty.
                                                          else old).
 
           (* Zero non-argument registers. *)
-          (* TODO: check istatus *)
           Definition CompartmentCall_PostRf_Ok
-            (istatus: InterruptStatus) 
             (init_rf: RegisterFile)
             (cgp: Cap)   (* cgp associated with new compartment *) 
             (csp: Cap)   (* csp associated with new compartment *) 
             (numArgs: nat)
             : RfSpecT :=
-            [ (rf_ra rfidx, eq (inl (switcherAfterCompartmentCallCap istatus)))
+            [ (rf_ra rfidx, eq (inl switcherAfterCompartmentCallCap))
             ; (rf_gp rfidx, eq (inl cgp))
             ; (rf_sp rfidx, eq (inl csp))    
             ; (rf_a0 rfidx, ZeroArg numArgs 0 init_rf (rf_a0 rfidx))
@@ -1464,7 +1474,7 @@ Module SwitcherProperty.
             (compartment: Compartment) 
             (rf: RegisterFile) :=
             exists cgp , compartment.(compartmentCGP) = Some cgp /\
-            RfSpec (CompartmentCall_PostRf_Ok entry.(exportEntryInterruptStatus) init_rf 
+            RfSpec (CompartmentCall_PostRf_Ok init_rf 
                                               cgp csp entry.(exportEntryNumArgs))
                    rf 
                    (fun _ => eq (inr zeroBytes)).
@@ -1534,7 +1544,7 @@ Module SwitcherProperty.
               sc st = ({| thread_mepcc := mepcc st_init ;
                           thread_mtcc := MTCC;
                           thread_exceptionInfo := exnInfo';
-                          thread_trustedStack := Build_TrustedStack (newFrame::(sts st).(thread_trustedStack).(trustedStack_frames));
+                          thread_trustedStack := Build_TrustedStack (newFrame::(sts st_init).(thread_trustedStack).(trustedStack_frames));
                           thread_alive := thread_alive (sts st_init) 
                        |}, entry.(exportEntryInterruptStatus)) /\
               (* PCC: points to compartment PCC offsetted by export entry offset. *)
@@ -1556,20 +1566,23 @@ Module SwitcherProperty.
             ; (rf_a1 rfidx, eq (inr zeroBytes))
             ].
 
-          (* Trusted stack and interrupt status is not changed. *)
+          (* Trusted stack is not changed. Return to the caller through
+             its return sentry in ra, which sets the interrupt status. *)
           Definition CCall_Post_NotEnoughStack
             (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
-            (exists exnInfo',
+            (exists exnInfo' ra istatus,
               sc st = ({| thread_mepcc := mepcc st_init;
                           thread_mtcc := MTCC;
                           thread_exceptionInfo := exnInfo';
                           thread_trustedStack := thread_trustedStack (sts st_init);
                           thread_alive := thread_alive (sts st_init)  
-                       |}, ints st_init)) /\
+                       |}, istatus) /\
+              (* PCC: the initial ra, which must be a return sentry, unsealed. *)
+              RegP (rf st_init) (rf_ra rfidx) (eq (inl ra)) /\
+              returnSentryInterruptStatus ra = Some istatus /\
+              pcc st = setCapSealed ra None) /\
             (* mem is unchanged *)
-            mem st = mem st_init /\
-            (* PCC: points to initial ra? *)
-            (RegP (rf st_init) (rf_ra rfidx) (eq (inl (pcc st)))) /\ 
+            mem st = mem st_init /\ 
             (* Rf: unchanged, other than return values. We could relax
                this to say other registers are all caller-reachable caps
                or values. *)

@@ -215,12 +215,6 @@ Section Machine.
       end.
 
 
-    Definition isSealedDataCap (c: Cap) :=
-      match c.(capSealed) with
-      | Some (inr _) => true
-      | _ => false
-      end.
-
     Definition isSealed (c: Cap) :=
       match c.(capSealed) with
       | Some _ => true

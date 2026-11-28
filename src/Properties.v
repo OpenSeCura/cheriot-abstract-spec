@@ -175,7 +175,7 @@ Module Configuration.
     (* Any caps sealed with the switcher's key (i.e. caps to export entries) initially
        reachable from a compartment must be present in the import table. Caps the
        compartment seals with its own keys are unconstrained. *)
-    Definition SealedDataCapsOnlyFromImportTables
+    Definition SwitcherSealedCapsOnlyFromImportTables
       (switcherKey: Key) (mem: FullMemory) (compartment: Compartment) : Prop :=
      forall cap,
        ReachableCap mem (capsOfCompartment compartment) cap ->
@@ -235,7 +235,7 @@ Module Configuration.
         (* All sentries reachable by a compartment were declared in import tables. *) 
       ; WFCompartment_Sentries: SentriesOnlyFromImportTables config.(configInitMemory) c
         (* All sealed data caps were declared in import tables. *) 
-      ; WFCompartment_SealedDataCap: SealedDataCapsOnlyFromImportTables config.(configSwitcher).(Switcher_key) config.(configInitMemory) c
+      ; WFCompartment_SwitcherSealedCaps: SwitcherSealedCapsOnlyFromImportTables config.(configSwitcher).(Switcher_key) config.(configInitMemory) c
       ; WFCompartment_ImportEntries: forall entry, In entry c.(compartmentImports) -> WFImportEntry config entry
         (* Valid sealing/unsealing caps *) 
       ; WFCompartment_SealingCaps: Forall ValidSealingCap c.(compartmentSealingCaps)
@@ -557,6 +557,10 @@ Module Configuration.
               H1: In ?addr (compartmentFootprint ?comp) |- _ =>
               let H' := fresh H1 "footprint" in 
               learn_hyp (compartmentInConfigFootprint _ _ _ _ H H1) as H'
+          | H: nth_error (configCompartments _) _ = Some ?comp,
+              H1: In ?addr (exportTableFootprint ?comp) |- _ =>
+              let H' := fresh H1 "footprint" in 
+              learn_hyp (exportTableInConfigFootprint _ _ _ _ H H1) as H'
           end.     
 
 
@@ -783,7 +787,7 @@ Module SwitcherProperty.
           (* Assumes Local and Store permissions are checked elsewhere *)
           Definition WriteStack (mem: FullMemory) (authCap: Cap) (v: CapOrBytes) :=
             (* Addresses are authorized. *)
-            Subset (seq (toCapAddr (authCap.(capCursor))) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
+            Subset (seq (fromCapAddr (toCapAddr (authCap.(capCursor)))) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
             (* Memory contains the new value. *)
               readCap mem (toCapAddr (authCap.(capCursor))) = v /\
             (* If the auth cap does not have cap permissions, then can't write caps. *)
@@ -1012,7 +1016,7 @@ Module SwitcherProperty.
 
           (* Assumes auth cap is a valid CSP and checked elsewhere. *)
           Definition ReadStack (mem: FullMemory) (authCap: Cap) (v: CapOrBytes) :=
-            Subset (seq (toCapAddr (authCap.(capCursor))) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
+            Subset (seq (fromCapAddr (toCapAddr (authCap.(capCursor)))) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
             readCap mem (toCapAddr (authCap.(capCursor))) = v.
 
           Definition PostRf_UnwindStack
@@ -1481,7 +1485,6 @@ Module SwitcherProperty.
           { CCallPre_PCCAddr: pcc st = CompartmentCallPCC
           ; CCallPre_TrustedStack: ValidTrustedStack config (sts st).(thread_trustedStack)
           ; CCallPre_Invariant: CompartmentCall_Invariant tid st st
-          (* ; CCallPre_RA: *) (* caller return address, because we entered via a forward sentry *)
           }.
 
           Definition ZeroArg (numArgs: nat) (regArgNum: nat) (init_rf: RegisterFile) (regIdx: nat) : CapOrBytes -> Prop :=
@@ -1508,7 +1511,21 @@ Module SwitcherProperty.
             ; (rf_t0 rfidx, ZeroArg numArgs 6 init_rf (rf_t0 rfidx))
             ].
 
-          (* TODO: check alignment and underflow. *) 
+          (* An address is capability-aligned. *)
+          Definition CapAligned (a: Addr) : Prop :=
+            fromCapAddr (toCapAddr a) = a.
+
+          (* A call needs room below the caller's csp for the spill slots
+             and the callee's reserved space, all within the caller's stack
+             (no underflow of the cursor arithmetic below), and an aligned
+             csp so the spill slots sit exactly at their capability-aligned
+             addresses. *)
+          Definition CallStackRoomOk (init_csp: Cap) : Prop :=
+            let needed := SPILL_SLOT_SIZE + STACK_ENTRY_RESERVED_SPACE in
+            CapAligned init_csp.(capCursor) /\
+            needed <= init_csp.(capCursor) /\
+            Subset (seq (init_csp.(capCursor) - needed) needed) init_csp.(capAddrs).
+
           (* Alternatively, could define in terms of restricting the initial csp. *)
           Definition postCompartmentCallCSP (init_csp: Cap) (newTop: Addr): Cap :=
           (* Reserve some compartment-invocation local space. *)
@@ -1533,7 +1550,7 @@ Module SwitcherProperty.
                 This implies that:
                 - initial csp was a valid csp.
                 - initial t1 points to sealed export table entry.
-                - there was enough stack space (TODO).
+                - there was enough stack space, and the csp was aligned (CallStackRoomOk).
 
                 The switcher will:
                 - Spill the pcc/cgp/s0/s1 below where the csp points.
@@ -1571,13 +1588,14 @@ Module SwitcherProperty.
                           addr >= initcsp.(capCursor) ->
                           MemEquivalentAtAddr mem mem' addr).
 
-          (* TODO: check for stack size *)
           Definition CCall_Post_Ok
             (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             (exists sealedCapToExportTable compartment entry exnInfo' init_csp,
               (* The initial csp is a valid csp. *)
               RegP (rf st_init) (rf_sp rfidx) (eq (inl init_csp)) /\
               ValidCSP init_csp /\
+              (* There is room on the stack and the csp is aligned. *)
+              CallStackRoomOk init_csp /\
               (* Initially, t1 contains a cap sealed with the
                  switcher's key that points to an export table entry. *)
               (RegP (rf st_init) (SWITCHER_SEALED_ARG_REG rfidx) (eq (inl sealedCapToExportTable))) /\ 
@@ -2182,7 +2200,7 @@ Module CompartmentIsolationValidation.
           cbv[SealedDataCapsIsolatedFromCompartment].
           intros. destruct_products; option_simpl. eapply hisolatedrrrr; eauto.
           eapply ReachableCaller; eauto.
-          eapply WFCompartment_SealedDataCap with (config := config);
+          eapply WFCompartment_SwitcherSealedCaps with (config := config);
             saturate_invariants.
       Qed.
 

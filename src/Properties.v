@@ -172,10 +172,14 @@ Module Configuration.
         isSentry cap = true ->
         In (ImportEntry_SentryToLibraryFunction cap) compartment.(compartmentImports).
 
-    Definition SealedDataCapsOnlyFromImportTables (mem: FullMemory) (compartment: Compartment) : Prop :=
+    (* Any caps sealed with the switcher's key (i.e. caps to export entries) initially
+       reachable from a compartment must be present in the import table. Caps the
+       compartment seals with its own keys are unconstrained. *)
+    Definition SealedDataCapsOnlyFromImportTables
+      (switcherKey: Key) (mem: FullMemory) (compartment: Compartment) : Prop :=
      forall cap,
        ReachableCap mem (capsOfCompartment compartment) cap ->
-       isSealedDataCap cap = true ->
+       cap.(capSealed) = Some (inr switcherKey) ->
        In (ImportEntry_SealedCapToExportEntry cap) compartment.(compartmentImports).
 
     (* A capability is in a library of its addresses belong to a library *)
@@ -231,7 +235,7 @@ Module Configuration.
         (* All sentries reachable by a compartment were declared in import tables. *) 
       ; WFCompartment_Sentries: SentriesOnlyFromImportTables config.(configInitMemory) c
         (* All sealed data caps were declared in import tables. *) 
-      ; WFCompartment_SealedDataCap: SealedDataCapsOnlyFromImportTables config.(configInitMemory) c
+      ; WFCompartment_SealedDataCap: SealedDataCapsOnlyFromImportTables config.(configSwitcher).(Switcher_key) config.(configInitMemory) c
       ; WFCompartment_ImportEntries: forall entry, In entry c.(compartmentImports) -> WFImportEntry config entry
         (* Valid sealing/unsealing caps *) 
       ; WFCompartment_SealingCaps: Forall ValidSealingCap c.(compartmentSealingCaps)
@@ -2104,7 +2108,7 @@ Module CompartmentIsolationValidation.
           cbv[SealedDataCapsIsolatedFromCompartment].
           intros. destruct_products; option_simpl. eapply hisolatedrrrr; eauto.
           eapply ReachableCaller; eauto.
-          eapply WFCompartment_SealedDataCap with (config := config); cbv[isSealedDataCap];
+          eapply WFCompartment_SealedDataCap with (config := config);
             saturate_invariants.
       Qed.
 

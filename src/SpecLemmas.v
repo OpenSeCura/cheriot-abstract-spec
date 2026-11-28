@@ -97,11 +97,11 @@ Section WithContext.
       forall (x y: Cap),
         Restrict y (attenuate x y).
     Proof.
-      cbv [attenuate Restrict].
+      cbv [attenuate Restrict isSealed].
       intros.
-      case_match; constructor; cbn; cbv[SealEq isSealed]; cbn; repeat simpl_match; cbn.
+      destruct (capSealed y) eqn:hsealed; [reflexivity | ].
+      constructor; cbn; cbv[SealEq]; auto.
       all: repeat match goal with
-           | |- EqSet ?x ?x => cbv[EqSet]; reflexivity
            | |- Subset (filter _ _) _ => apply SubsetFilter1
            | |- _ => progress (simplify_Subset || auto)
            end.
@@ -112,35 +112,32 @@ Section WithContext.
       Restrict c c' ->
       Subset c'.(capSealingKeys) c.(capSealingKeys).
     Proof.
-      cbv[Restrict]. intros. case_match;
-        destruct H; cbv[EqSet Subset] in *; auto.
-      intros. rewrite<-restrictSealedSealingKeysEq; auto.
+      cbv[Restrict]. intros.
+      destruct (capSealed c); [subst; cbv[Subset]; auto | destruct H; auto].
     Qed.
     Lemma RestrictCapUnsealingKeysSubset:
       forall (c c': Cap),
       Restrict c c' ->
       Subset c'.(capUnsealingKeys) c.(capUnsealingKeys).
     Proof.
-      cbv[Restrict]. intros. case_match;
-        destruct H; cbv[EqSet Subset] in *; auto.
-      intros. rewrite<-restrictSealedUnsealingKeysSubset; auto.
+      cbv[Restrict]. intros.
+      destruct (capSealed c); [subst; cbv[Subset]; auto | destruct H; auto].
     Qed.
     Lemma RestrictSealedEq:
       forall (c c': Cap),
       Restrict c c' ->
       c.(capSealed) = c'.(capSealed).      
     Proof.
-      cbv[Restrict]. intros. case_match;
-        destruct H; cbv[SealEq] in *; rewrite_solve.
+      cbv[Restrict]. intros.
+      destruct (capSealed c) eqn:hsealed; [subst; auto | destruct H; cbv[SealEq] in *; congruence].
     Qed.
     Lemma RestrictCapAddrsSubset:
       forall (c c': Cap),
       Restrict c c' ->
       Subset c'.(capAddrs) c.(capAddrs).
     Proof.
-      cbv[Restrict]. intros. case_match;
-        destruct H; cbv[EqSet Subset] in *; auto.
-      intros. rewrite<-restrictSealedAddrsEq; auto.
+      cbv[Restrict]. intros.
+      destruct (capSealed c); [subst; cbv[Subset]; auto | destruct H; auto].
     Qed.
 
     Lemma RestrictSetCapUnsealed:
@@ -149,38 +146,27 @@ Section WithContext.
         Restrict (setCapSealed y None) (setCapSealed z None).
     Proof.
       intros. cbv[Restrict] in *. cbv[setCapSealed]. cbn.
-      case_match; inv H; constructor; cbv[SealEq]; cbn; auto.
-      all: cbv [EqSet Subset] in *; intros *; 
-                 try match goal with
-                 | H: _ |- _ => rewrite H 
-                 end; auto.
+      destruct (capSealed y).
+      - subst. constructor; cbv[SealEq Subset]; cbn; auto.
+      - destruct H; constructor; cbv[SealEq Subset] in *; cbn; auto.
     Qed.
 
     Lemma RestrictRefl: forall (x: Cap), Restrict x x.
     Proof.
       intros. cbv[Restrict].
-      case_match; constructor; cbv[EqSet Subset SealEq]; auto.
-      all: reflexivity.
+      destruct (capSealed x); [reflexivity | constructor; cbv[Subset SealEq]; auto].
     Qed.
 
     Lemma RestrictTrans:
       forall (x y z: Cap),
         Restrict x y -> Restrict y z -> Restrict x z.
     Proof.
-      cbv[Restrict]. intros. repeat case_match;
-      repeat match goal with
-      | H: RestrictSealed _ _ |- _ => destruct H
-      | H: RestrictUnsealed _ _ |- _ => destruct H
-        end; constructor; cbv[EqSet SealEq Subset] in *; auto; try rewrite_solve.
-      all: intros *;
-           try match goal with
-           | H: _ |- _ => rewrite H 
-           end; auto.
-      all: repeat match goal with
-           | _ => progress option_simpl 
-           | H: _ = Some _ |- _ => rewrite H in *
-           | H: _ = None |- _ => rewrite H in *
-             end.
+      cbv[Restrict]. intros x y z hxy hyz.
+      destruct (capSealed x) eqn:hx.
+      - subst. rewrite hx in hyz. auto.
+      - destruct hxy as [hseal ? ? ? ? ? ? ? ? ?]. cbv[SealEq] in hseal.
+        rewrite hseal, hx in hyz. destruct hyz.
+        constructor; cbv[SealEq Subset] in *; intros; auto; congruence.
     Qed.
 
     Lemma RestrictUnsealedOk:

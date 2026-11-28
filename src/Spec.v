@@ -230,31 +230,21 @@ Section Machine.
     Abbreviation PermIntersect perms1 perms2 := (filter (fun p => existsb (Perm.t_beq p) perms2) perms1).
     Abbreviation LabelIntersect labels1 labels2 := (filter (fun p => existsb (Label_beq p) labels2) labels1).
 
-    Definition AttenuatePermsIfNotSealed (sealed: bool) (perms1 perms2: list Perm.t) :=
-      if sealed then perms2
-      else PermIntersect perms1 perms2.
-
-    Definition AttenuateLabelsIfNotSealed (sealed: bool) (labels1 labels2: list Label) :=
-      if sealed then labels2
-      else LabelIntersect labels1 labels2.
-
+    (* Sealed capabilities are immutable: loading one does not attenuate it. *)
     Definition attenuate (loadAuthCap: Cap) (loaded: Cap) : Cap :=
-      let sealed := isSealed loaded in
-      {| capSealed          := loaded.(capSealed);
-         capPerms           := AttenuatePermsIfNotSealed  sealed loadAuthCap.(capKeepPerms) loaded.(capPerms);
-         capCanStore        := AttenuateLabelsIfNotSealed sealed loadAuthCap.(capKeepCanStore) loaded.(capCanStore);
-         (* This is also a quirk of CHERIoT as in the case of restricting caps.
-            Ideally, no attenuation (implicit or explicit) must happen under a seal.
-          *)
-         capCanBeStored     := LabelIntersect loadAuthCap.(capKeepCanBeStored) loaded.(capCanBeStored);
-         capSealingKeys     := loaded.(capSealingKeys);
-         capUnsealingKeys   := loaded.(capUnsealingKeys);
-         capAddrs           := loaded.(capAddrs);
-         capKeepPerms       := AttenuatePermsIfNotSealed  sealed loadAuthCap.(capKeepPerms) loaded.(capKeepPerms);
-         capKeepCanStore    := AttenuateLabelsIfNotSealed sealed loadAuthCap.(capKeepCanStore) loaded.(capKeepCanStore);
-         capKeepCanBeStored := AttenuateLabelsIfNotSealed sealed loadAuthCap.(capKeepCanBeStored) loaded.(capKeepCanBeStored);
-         capCursor          := loaded.(capCursor)
-      |}.
+      if isSealed loaded then loaded
+      else {| capSealed          := loaded.(capSealed);
+              capPerms           := PermIntersect  loadAuthCap.(capKeepPerms) loaded.(capPerms);
+              capCanStore        := LabelIntersect loadAuthCap.(capKeepCanStore) loaded.(capCanStore);
+              capCanBeStored     := LabelIntersect loadAuthCap.(capKeepCanBeStored) loaded.(capCanBeStored);
+              capSealingKeys     := loaded.(capSealingKeys);
+              capUnsealingKeys   := loaded.(capUnsealingKeys);
+              capAddrs           := loaded.(capAddrs);
+              capKeepPerms       := PermIntersect  loadAuthCap.(capKeepPerms) loaded.(capKeepPerms);
+              capKeepCanStore    := LabelIntersect loadAuthCap.(capKeepCanStore) loaded.(capKeepCanStore);
+              capKeepCanBeStored := LabelIntersect loadAuthCap.(capKeepCanBeStored) loaded.(capKeepCanBeStored);
+              capCursor          := loaded.(capCursor)
+           |}.
 
   End CapHelpers.
 
@@ -280,33 +270,11 @@ Section Machine.
           restrictUnsealedKeepCanStoreSubset: Subset z.(capKeepCanStore) y.(capKeepCanStore);
           restrictUnsealedKeepCanBeStoredSubset: Subset z.(capKeepCanBeStored) y.(capKeepCanBeStored) }.
 
-      Record RestrictSealed : Prop := {
-          restrictSealedEqs: SealEq;
-          restrictSealedPermsEq: EqSet z.(capPerms) y.(capPerms);
-          restrictSealedCanStore: EqSet z.(capCanStore) y.(capCanStore);
-          (* The following seems to be a quirk of CHERIoT,
-           maybe make it equal in CHERIoT ISA if there's no use case for this behavior
-           and merge with RestrictUnsealed?
-           Here's a concrete example why this is bad:
-             I have objects in Global and a set of pointers to these objects also in Global.
-             I seal an element of that set (which points to an object) and send to a client.
-             Client gets a Global sealed cap, makes it Stack and sends it back to me after finishing processing.
-             I unseal it, but I lost my ability to store it back into that set in Global.
-             Instead, I need to rederive the Global for the unsealed cap to be able to store into the Global set.
-           *)
-          restrictSealedCanBeStoredSubset: Subset z.(capCanBeStored) y.(capCanBeStored);
-          restrictSealedSealingKeysEq: EqSet z.(capSealingKeys) y.(capSealingKeys);
-          restrictSealedUnsealingKeysSubset: EqSet z.(capUnsealingKeys) y.(capUnsealingKeys);
-          restrictSealedAddrsEq: EqSet z.(capAddrs) y.(capAddrs);
-          restrictSealedKeepPermsSubset: EqSet z.(capKeepPerms) y.(capKeepPerms);
-          restrictSealedKeepCanStoreSubset: EqSet z.(capKeepCanStore) y.(capKeepCanStore);
-          restrictSealedKeepCanBeStoredSubset: EqSet z.(capKeepCanBeStored) y.(capKeepCanBeStored);
-          restrictSealedCursorEq: z.(capCursor) = y.(capCursor) }.
-
       Definition Restrict : Prop :=
         match y.(capSealed) with
         | None => RestrictUnsealed
-        | _ => RestrictSealed
+        (* Sealed capabilities are immutable. *)
+        | Some _ => z = y
         end.
 
       Record LoadCap : Prop :=
@@ -321,12 +289,14 @@ Section Machine.
       (* Cap z is the sealed version of cap y using a key in x *)
       Definition Seal : Prop :=
         exists k, In k x.(capSealingKeys) /\
+             In Perm.Sealing x.(capPerms) /\
              x.(capSealed) = None /\
              y.(capSealed) = None /\
              z = setCapSealed y (Some (inr k)).
 
       Definition Unseal : Prop :=
         exists k, In k x.(capUnsealingKeys) /\
+             In Perm.Unsealing x.(capPerms) /\
              x.(capSealed) = None /\
              y.(capSealed) = Some (inr k) /\
              z = setCapSealed y None.

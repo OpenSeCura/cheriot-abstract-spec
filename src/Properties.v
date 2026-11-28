@@ -477,6 +477,8 @@ Module Configuration.
       ; ValidInit_threads: Forall2 (ValidInitialThread config) config.(configThreads) m.(machine_threads) 
       ; ValidInit_invariant: GlobalInvariant config m
       ; ValidInit_userMode: UserModeInvariant config m
+        (* The loader hands over with interrupts enabled. *)
+      ; ValidInit_interrupts: m.(machine_interruptStatus) = InterruptsEnabled
       }.
 
     Hint Resolve Inv_curThread : invariants.
@@ -1115,6 +1117,12 @@ Module SwitcherProperty.
           Definition ThreadDead (st: ThreadState) :=
             (sts st).(thread_alive) = ThreadDead.
 
+          (* The switcher may end a thread, but must leave interrupts
+             enabled: dead threads never step, and the machine switches
+             threads only with interrupts enabled. *)
+          Definition ThreadDeadOk (st: ThreadState) :=
+            ThreadDead st /\ ints st = InterruptsEnabled.
+
           (* Switcher invariant should hold for any memory that is
            * equivalent to st_init at the thread's stack + switcher + export-table regions.
            *)
@@ -1334,7 +1342,7 @@ Module SwitcherProperty.
             ; EEPost_Cases: ExceptionEntry_Post_Stackful tid st_init st
                             \/ ExceptionEntry_Post_Stackless tid st_init st
                             \/ Post_UnwindStackForced tid st_init st
-                            \/ ThreadDead st
+                            \/ ThreadDeadOk st
             ; EEPost_OnlyStackChanged: NonStackMemPreserved config tid (mem st_init) (mem st)
             }.
   
@@ -1410,7 +1418,7 @@ Module SwitcherProperty.
                *)
                (* ExceptionEntry_PostInstallContext tid st_init st \/ *)
                 Post_UnwindStackForced tid st_init st \/
-                  ThreadDead st
+                  ThreadDeadOk st
             ; ERPost_OnlyStackChanged: NonStackMemPreserved config tid (mem st_init) (mem st)
             }.
 
@@ -1594,7 +1602,7 @@ Module SwitcherProperty.
           ; CCPost_Cases: CCall_Post_Ok tid st_init st \/
                           CCall_Post_NotEnoughStack tid st_init st \/
                           Post_UnwindStackForced tid st_init st \/
-                          ThreadDead st
+                          ThreadDeadOk st
           ; CCPost_OnlyStackChanged: NonStackMemPreserved config tid (mem st_init) (mem st)
           }.
 
@@ -1628,7 +1636,7 @@ Module SwitcherProperty.
           Record CompartmentReturn_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
           { CRetPost_Mode: ~(InSystemMode st)
           ; CRetPost_Cases: Post_UnwindStackReturnOk tid st_init st \/
-                            ThreadDead st
+                            ThreadDeadOk st
           ; CRetPost_OnlyStackChanged: NonStackMemPreserved config tid (mem st_init) (mem st)
           }.
 

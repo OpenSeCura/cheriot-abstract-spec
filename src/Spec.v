@@ -46,9 +46,13 @@ Section Machine.
   Context [ISA: ISA_params].
   Context {machineTypeParams: MachineTypeParams}.
   Definition Addr := nat.
-  Definition CapAddr := nat.
-  Definition toCapAddr (a: Addr): CapAddr := Nat.shiftr a ISA_LG_CAPSIZE_BYTES.
-  Definition fromCapAddr (a: CapAddr): Addr := Nat.shiftl a ISA_LG_CAPSIZE_BYTES.
+  (* The index of a capability-sized, capability-aligned memory slot.
+     A distinct type from Addr (a byte address), so the two cannot be
+     confused: convert with toCapAddr / fromCapAddr. *)
+  Record CapAddr := MkCapAddr { capAddrIdx: nat }.
+  Definition CapAddr_eqb (a b: CapAddr) : bool := Nat.eqb a.(capAddrIdx) b.(capAddrIdx).
+  Definition toCapAddr (a: Addr): CapAddr := MkCapAddr (Nat.shiftr a ISA_LG_CAPSIZE_BYTES).
+  Definition fromCapAddr (a: CapAddr): Addr := Nat.shiftl a.(capAddrIdx) ISA_LG_CAPSIZE_BYTES.
 
   (* A cap X can be stored in a cap Y only if X can be stored in a Label that Y provides *)
   (* An example where restricting the label of what can be stored in a cap is useful:
@@ -130,7 +134,7 @@ Section Machine.
   Definition writeMemBytes (mem: Memory_t) (a: Addr) (bytes: Bytes): Memory_t :=
     fst (fold_left (fun '(mem', a') byte => (writeMemByte mem' a' byte, S a')) bytes (mem, a)).
 
-  Definition writeTagTag (tags: Tag_t) (capa: CapAddr) (t: bool) : Tag_t := (fun i => if i =? capa
+  Definition writeTagTag (tags: Tag_t) (capa: CapAddr) (t: bool) : Tag_t := (fun i => if CapAddr_eqb i capa
                                                                                       then t
                                                                                       else tags i).
 

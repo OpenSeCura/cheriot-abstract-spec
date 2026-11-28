@@ -798,8 +798,8 @@ Module SwitcherProperty.
           Definition readMemTagCapOk (mem: FullMemory) (authCap: Cap) (res: CapOrBytes) : Prop :=
             authCap.(capSealed) = None /\
             In Perm.Load authCap.(capPerms) /\ 
-            Subset (seq authCap.(capCursor) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
-            match readCap mem authCap.(capCursor) with
+            Subset (seq (fromCapAddr (toCapAddr authCap.(capCursor))) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
+            match readCap mem (toCapAddr authCap.(capCursor)) with
             | inl cap => 
                (In Perm.Cap authCap.(capPerms) ->
                 res = inl (attenuate authCap cap)) /\
